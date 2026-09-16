@@ -1,0 +1,136 @@
+%!TEX root = ../main.tex
+\chapter{Introduction}
+\label{ch:introduction}
+
+\section{Problem Description}
+
+Autonomous navigation of a robotic platform in an unknown environment requires
+solving, continuously and in real time, two problems: knowing where the robot is,
+and knowing what surrounds it, so as to move towards a goal without hitting
+anything. In common practice these two problems are addressed by pipelines built
+around one specific platform: a given set of sensors, mounted in given positions,
+on a vehicle with a given kinematics. Changing any one of these elements ---
+replacing a LiDAR with a depth camera, moving from a rover to a multirotor ---
+typically means rewriting significant parts of the system, in perception as well
+as in control.
+
+This thesis is set within the Vulturna project, an autonomy pipeline designed
+to be \emph{hardware-independent}: perception, state estimation, mapping and
+navigation are built so that the same system runs on different robots --- ground
+or aerial, with different sensors, geometries and kinematic limits --- without
+changing the code. Which sensors are present, how they are mounted and within
+which limits the platform moves are configuration data, not knowledge embedded
+in the software. Downstream, the pipeline delivers a unified representation of
+the surroundings that is independent of the source that produced it.
+
+The problem addressed by this thesis is the last link of that chain: deciding
+the motion. The approach is learnt, not programmed. No explicit rule describes
+how to avoid an obstacle or how to approach a goal; a neural network --- called
+the \emph{microbrain} within the project --- observes the space around the robot
+and directly produces the velocity command, taking exactly the place a human
+pilot would take. For this to be possible on an agnostic platform, the network
+must meet three requirements that rarely coexist. It must consume an observation
+whose form does not depend on the sensor that produced it, and therefore work on
+a sparse geometric representation rather than on an image. It must produce a
+command that is valid for vehicles with different kinematics --- a rover that
+cannot climb, a multirotor that translates in every direction --- by reading the
+vehicle's limits from the observation itself. And it must have memory: a single
+snapshot of the local surroundings is not enough to decide where to go, because
+the local map forgets what the robot no longer sees, data arrive at irregular
+intervals, and the correct manoeuvre depends on what has just happened.
+
+It is this last requirement that motivates the choice of \emph{Liquid Neural
+Networks} (LNN): a family of continuous-time recurrent networks, derived from
+Liquid Time-Constant networks, in which the internal state evolves according to
+a differential equation whose integration step is the real interval elapsed
+between two observations. Compared with classical recurrent networks they offer
+a memory that accounts for physical time, a small size and --- in the variants
+with a sparse wiring inspired by biological neural circuits --- an interpretable
+structure. They were proposed precisely for robot and vehicle control tasks, but
+their application to a multi-robot, multi-sensor platform fed with point clouds
+rather than images has not been explored. This thesis studies whether and how
+these networks can serve as the microbrain of an agnostic platform, and which of
+their variants is best suited to the task.
+
+\section{Objectives}
+
+The work is organised around three objectives, which also follow the
+chronological order in which they were addressed.
+
+\paragraph{The platform.}
+The first objective, carried out during the internship that preceded the
+thesis, was the realisation of the robotic pipeline everything else rests on: a
+ROS~2 system capable of handling, in a sensor-agnostic way, an arbitrary and
+varied set of sensors, and of fusing their data into a single estimate of the
+robot's pose and a single representation of its surroundings, suitable for
+deciding the motion. The pipeline runs identically in simulation and on real
+hardware. For this thesis it is, at once, the producer of the observation the
+network consumes, the recorder of the training data, and the environment in
+which the network is put to the test.
+
+\paragraph{The networks.}
+The second objective is the analysis of Liquid Neural Networks, considered
+fundamental to the problem for their ability to maintain a memory consistent
+with physical time. The analysis starts from the mathematical formulation of
+the three cells considered --- Liquid Time-Constant (LTC), Closed-form
+Continuous-time (CfC) and Liquid Resistance-Capacitance Unit (LRCU) --- and of
+the two wiring schemes, dense and sparse according to the Neural Circuit Policy
+(NCP), and continues with their implementation in PyTorch, first as reusable
+modules and then as complete networks. Around the cells sit a sparse
+convolutional encoder, which reduces the voxel cloud produced by the pipeline
+to a compact descriptor, and the auxiliary modules that make the network usable
+on a heterogeneous fleet of robots: observation normalisation, the robot-model
+embedding and output calibration. The modules and the networks are validated
+first on synthetic tasks and then on the recorded data.
+
+\paragraph{Training and comparison.}
+The third objective is the design of the training of these networks and their
+comparison on the problem, in order to identify the best candidate. The strategy
+has two stages. In the first, the networks learn by imitation from a corpus of
+flights recorded on the pipeline, in which every sample pairs what the robot
+observed with the command the pilot gave; this stage produces the weights the
+robot flies with and those the next stage starts from. In the second, the
+networks are refined by reinforcement learning, flying in a fleet of parallel
+simulations and receiving a reward designed so that reaching the goal, without
+losing the vehicle, is numerically the best policy. Both stages are instrumented
+with a set of metrics designed to distinguish genuine learning from its
+imitations, and are validated on simpler control tasks before being applied to
+the problem. The comparison between the architectures is carried out on those
+metrics.
+
+\section{Contributions}
+
+\section{Thesis Outline}
+
+The rest of the thesis is organised as follows.
+
+Chapter~\ref{ch:related} places the work with respect to the literature:
+learnt navigation for aerial and ground robots, Liquid Neural Networks and
+their applications to control, point-cloud encoders, and the combination of
+imitation and reinforcement learning.
+
+Chapter~\ref{ch:ros2} presents the ROS~2 pipeline built during the internship:
+what it does, the hardware-agnostic principle it is built on, how data from
+heterogeneous sensors are fused, and the observation it delivers to the network
+--- the observation space on which everything that follows is built.
+
+Chapter~\ref{ch:lnn} presents the Liquid Neural Networks: the formulation of
+the LTC, CfC and LRCU cells and of the NCP wiring, the sparse convolutional
+encoder and the auxiliary modules, their implementation in PyTorch and the
+networks that result.
+
+Chapter~\ref{ch:metrics} defines, before any result, the metrics through which
+the two training stages are read: what each one measures, why it was
+introduced, and how they are to be read together. It is a self-contained
+chapter, meant as a reference for the chapters that follow.
+
+Chapter~\ref{ch:training} describes the training: the two-stage strategy; for
+the supervised stage, the dataset and its pipeline, the loss function, the
+output calibration and the results; for the reinforcement stage, the algorithm
+(a recurrent variant of PPO with GAE), the environment and the episode policy,
+the reward design, the fine-tuning from the imitated weights, the validation on
+a standard control task and the results on the fleet. The chapter closes with
+the comparison between the architectures.
+
+Chapter~\ref{ch:conclusions} summarises the results obtained, discusses the
+limits of the work and points to future developments.

@@ -1,0 +1,44 @@
+% uaqthesis class options:
+%   italian | english   -> language of the title-page / front-matter labels
+%   Lau | LaM           -> Bachelor's (Laurea) | Master's (Laurea Magistrale)
+%   oneside | twoside   -> single-sided / double-sided printing
+%   noexaminfo          -> hide the defence date and the examination board
+%   fem                 -> "Candidata" instead of "Candidato" (Italian only)
+\documentclass[english, Lau, oneside, noexaminfo]{uaqthesis}
+
+\input{preamble}
+
+\begin{document}
+
+% ----- FRONT MATTER (roman page numbers) -----
+\frontmatter
+\input{frontmatter/titlepage}
+\input{frontmatter/dedication}
+\input{frontmatter/abstract}
+% \input{frontmatter/acknowledgements}
+
+\tableofcontents
+% \listoffigures
+% \listoftables
+
+% ----- CHAPTERS (arabic page numbers) -----
+\mainmatter
+\input{chapters/CH01_Introduction.tex}
+\input{chapters/CH02_Related_Work.tex}
+\input{chapters/CH03_ROS2.tex}
+\input{chapters/CH04_LNN.tex}
+\input{chapters/CH05_Metrics.tex}
+\input{chapters/CH06_Training.tex}
+\input{chapters/CH07_Conclusions.tex}
+
+% ----- APPENDICES -----
+\begin{appendices}
+%\input{appendix/A-...}
+\end{appendices}
+
+% ----- BIBLIOGRAPHY -----
+\backmatter
+\nocite{*}   % comment out to list only the entries actually cited in the text
+\printbibliography[heading=bibintoc]
+
+\end{document}

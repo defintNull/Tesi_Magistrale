@@ -1,0 +1,49 @@
+%!TEX root = ../main.tex
+% Manual title page, modelled on the one of the `tesiinfo` class used in Tesi___1
+% (logo, university, department, rule, thesis type, title, advisor/candidate,
+% co-advisor, rule, academic year). It replaces uaqthesis' \maketitle.
+% Fill in the fields in square brackets.
+%
+% NOTE: the university and department names are given in their official English
+% form. If the department requires the Italian wording on the title page, use
+%   Università degli Studi dell'Aquila
+%   Dipartimento di Ingegneria e Scienze dell'Informazione e Matematica
+%   Tesi di Laurea Triennale in Ingegneria dell'Informazione
+%   Relatore / Correlatore / Laureando / mat. / Anno Accademico
+
+\begin{titlepage}
+    \centering
+
+    % --- LOGO AND UNIVERSITY ---
+    \includegraphics[width=62pt]{logo_univaq.jpg}\\[1ex]
+    {\bfseries\large University of L'Aquila\\[2ex]}
+    {\bfseries Department of Information Engineering, Computer Science and Mathematics\\[1ex]}
+
+    \noindent\rule[-1ex]{\textwidth}{1pt}\\[0.5ex]
+    {\bfseries Bachelor's Thesis in Information Engineering\\[1ex]}
+
+    \vfill
+
+    % --- TITLE ---
+    {\linespread{1.0}\huge\bfseries [THESIS TITLE]\\}
+    \emph{\large [Subtitle]}   % leave empty if not needed
+
+    \vfill
+
+    % --- ADVISOR / CANDIDATE ---
+    \begin{minipage}{\textwidth}
+        \raggedright
+        {\bfseries Advisor: \hfill Candidate:\\[0ex]}
+        Prof. [Name Surname] \hfill {[Name Surname]}, ID no. [000000]\\[4ex]
+        % --- CO-ADVISOR (delete these two lines if there is none) ---
+        {\bfseries Co-Advisor:\\[0ex]}
+        Prof. [Name Surname]\\[4ex]
+    \end{minipage}
+
+    \vfill
+
+    % --- ACADEMIC YEAR ---
+    \noindent\rule[-1ex]{\textwidth}{0.5pt}\\
+    {\bfseries Academic Year 2025--26\\[1ex]}
+
+\end{titlepage}

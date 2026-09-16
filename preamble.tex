@@ -1,0 +1,76 @@
+% =====================================================================
+%  preamble.tex - packages and configuration
+%  (the uaqthesis class already loads: geometry, fontenc T1, lmodern,
+%   graphicx, color, amsmath, booktabs, caption, fancyhdr)
+% =====================================================================
+
+% Language
+\usepackage[english]{babel}
+
+% Encoding
+\usepackage[utf8]{inputenc}
+\usepackage{csquotes}
+
+% Typography
+\usepackage{microtype}
+\usepackage{indentfirst}
+\linespread{1.5}
+
+% Mathematics and units
+\usepackage{amssymb}
+\usepackage{siunitx}
+
+% Figures
+\graphicspath{{images/}}
+\usepackage{subcaption}
+\usepackage{float}
+
+% Tables
+\usepackage{array}
+\usepackage{longtable}
+
+% Appendices (listed in the table of contents, with a separator page)
+\usepackage[toc,page]{appendix}
+
+% Code blocks
+\usepackage{listings}
+\usepackage{xcolor}
+
+\lstset{
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{blue},
+    commentstyle=\color{gray},
+    stringstyle=\color{red},
+    numbers=left,
+    numberstyle=\tiny,
+    stepnumber=1,
+    frame=single,
+    breaklines=true,
+    inputencoding=utf8,
+    extendedchars=true,
+    literate=
+        {à}{{\`a}}1
+        {è}{{\`e}}1
+        {é}{{\'e}}1
+        {ì}{{\`i}}1
+        {ò}{{\`o}}1
+        {ù}{{\`u}}1
+}
+
+% Metric / column names as they appear in the training logs, typed literally
+% (underscores, slashes, angle brackets) in monospace and breakable at _ and /
+\usepackage{url}
+\DeclareUrlCommand\met{\urlstyle{tt}}
+
+% Bibliography
+\usepackage[backend=biber]{biblatex}
+\addbibresource{bibliography/references.bib}
+
+% Clickable links (must be loaded last)
+\usepackage{hyperref}
+\hypersetup{
+    hidelinks,
+    pdftitle={Bachelor's Thesis},
+    pdfauthor={},
+    pdfkeywords={thesis, univaq, l'aquila}
+}
