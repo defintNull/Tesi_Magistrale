@@ -1,4 +1,4 @@
-# Bachelor's Thesis
+# Master's Thesis
 
 This folder is the LaTeX environment for writing and building the thesis, based on
 the `uaqthesis` class (University of L'Aquila).
