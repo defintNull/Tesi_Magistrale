@@ -3,17 +3,779 @@
 \label{ch:lnn}
 
 \section{Overview}
+\label{sec:lnn-overview}
 
-\section{Taxonomy: LTC, CfC, LRCU and NCP Wiring}
+The network this work trains takes the place of the pilot: it receives the
+observation defined in Section~\ref{sec:observation-space} --- the local voxel
+map, the pose, the goal and the declaration the robot makes about itself --- and
+produces the velocity command the platform executes. The problem has three
+properties that determine the architecture.
+
+It is \emph{partially observable}: a single frame does not say whether the robot
+was accelerating, whether the obstacle ahead is approaching, or how long it has
+been standing still. Memory is required.
+
+It is \emph{non-uniform in time}: the rate at which frames arrive is not
+constant. A discrete-time recurrent network, such as an LSTM
+\cite{hochreiter1997lstm} or a GRU \cite{cho2014gru}, treats every step as
+equivalent to the previous one, and therefore interprets a two-second
+interruption as though it were an interval of a tenth of a second. This is the
+reason why the family of cells adopted is that of \emph{Liquid Neural Networks}
+\cite{hasani2021ltc,hasani2022cfc}: the state evolves not by iteration but by
+integration of a differential equation, and the elapsed time is an input of the
+update rather than an implicit assumption. The same family has been employed
+successfully in end-to-end learnt flight navigation \cite{chahine2023flight},
+which shares with the present problem the nature of the input and the need to
+generalise outside the training distribution.
+
+It is, finally, \emph{heterogeneous}: the same network must fly different
+platforms, with velocity limits that vary and masses that differ. The
+architecture therefore contains two modules --- the observation normaliser and
+the robot-model embedding --- whose task is to make comparable robots that are
+not.
+
+\paragraph{The structure.}
+The architecture is a single one, with two points of variation
+(Figure~\ref{fig:architecture}). Three
+independent branches --- the sparse encoder that reduces the voxel map to a
+compact descriptor, the normalisation of the \num{41} dense values, and the
+robot-model embedding --- are concatenated and projected by a single linear
+layer into a fusion vector. The fusion vector traverses two recurrent cells in
+cascade, and the state of the second feeds a linear head that produces the six
+components of the command, rescaled by a final affine stage. The two points of
+variation are \emph{which cell} occupies the recurrent core --- LTC, CfC or
+LRCU --- and \emph{whether that core is sparsely wired} according to the NCP
+scheme. Everything else lives in a common base class and is identical across all
+variants, so that a change to the input or output path reaches every variant at
+once and the comparison isolates exactly the two choices.
+
+\begin{figure}[htbp]
+  \centering
+  \linespread{1}\selectfont
+  \begin{tikzpicture}[node distance=6mm]
+    \node[blk] (enc) {sparse encoder\\\footnotesize 4 levels $\to$ 200};
+    \node[blk, right=9mm of enc] (nrm) {observation\\normaliser\\\footnotesize 41};
+    \node[blk, right=9mm of nrm] (emb) {model\\embedding\\\footnotesize id $\to$ 8};
+
+    \node[lbl, above=2mm of enc] {voxel indices};
+    \node[lbl, above=2mm of nrm] {goal $\mid$ odom $\mid$ state};
+    \node[lbl, above=2mm of emb] {\texttt{model\_id}};
+
+    \node[blk, below=9mm of nrm] (fus) {fusion layer\\\footnotesize $249 \to 192$};
+    \draw[flow] (enc.south) |- ([yshift=4mm]fus.north) -- (fus.north);
+    \draw[flow] (nrm) -- (fus);
+    \draw[flow] (emb.south) |- ([yshift=4mm]fus.north) -- (fus.north);
+
+    \node[blk, below=10mm of fus] (c1) {cell 1\\\footnotesize $192 \to 80$};
+    \node[blk, below=9mm of c1]  (c2) {cell 2\\\footnotesize $80 \to 80$};
+    \draw[flow] (fus) -- (c1);
+    \draw[flow] (c1) -- (c2);
+
+    \begin{scope}[on background layer]
+      \node[draw, dashed, rounded corners=3pt, fill=black!3,
+            fit=(c1)(c2), inner sep=4mm] (core) {};
+    \end{scope}
+    \node[note, left=8mm of core, text width=27mm, anchor=east]
+      {the variable part:\\LTC, CfC or LRCU,\\dense or NCP-wired};
+
+    \node[blk, below=10mm of c2] (head) {head\\\footnotesize $80 \to 128 \to 6$};
+    \node[blk, below=8mm of head] (cal) {output calibration};
+    \node[lbl, below=6mm of cal] (out) {\texttt{cmd\_vel}, 6};
+    \draw[flow] (c2) -- (head);
+    \draw[flow] (head) -- (cal);
+    \draw[flow] (cal) -- (out);
+
+    \draw[thin flow, dashed] (fus.east) -- ++(14mm,0) |- (c2.east);
+    \draw[thin flow, dashed] (c1.east)  -- ++(7mm,0)  |- (head.east);
+  \end{tikzpicture}
+  \caption{The architecture, with the two points of variation. Everything
+           outside the dashed box is common to the six networks compared; inside
+           it sit the two recurrent cells, which differ in their update rule and
+           in whether their matrices are masked. The dashed arrows on the right
+           are the two bypass paths that only the sparsely wired variants carry
+           (Section~\ref{sec:lnn-wiring}).}
+  \label{fig:architecture}
+\end{figure}
+
+\section{Continuous-Time Cells: LTC, CfC and LRCU}
 \label{sec:lnn-taxonomy}
+
+\subsection{From neural differential equations to liquid cells}
+\label{sec:lnn-background}
+
+The three cells employed in this work belong to a single line of models, and
+understanding them requires that line to be briefly retraced.
+
+The point of departure is the family of \emph{neural ordinary differential
+equations} \cite{chen2018neuralode}, in which the hidden state
+$x(t) \in \mathbb{R}^{D}$ is not updated by a discrete recurrence but defined as
+the solution of
+\begin{equation}
+  \frac{\mathrm{d}x(t)}{\mathrm{d}t} = f\!\left(x(t), I(t), t, \theta\right),
+  \label{eq:node}
+\end{equation}
+where $I(t)$ is the input and $f$ a neural network with parameters $\theta$. The
+state at an arbitrary instant is obtained by numerically integrating
+Equation~\eqref{eq:node}, and the network is trained by differentiating through
+the solver. The formulation makes the model naturally defined on a continuous
+time axis, but offers no guarantee on the asymptotic behaviour of the state.
+
+A more stable formulation is that of \emph{continuous-time recurrent networks}
+\cite{funahashi1993ctrnn}, which add to the learnt term an exponential decay
+towards equilibrium,
+\begin{equation}
+  \frac{\mathrm{d}x(t)}{\mathrm{d}t}
+    = -\frac{x(t)}{\tau} + f\!\left(x(t), I(t), t, \theta\right),
+  \label{eq:ctrnn}
+\end{equation}
+in which $\tau$ is a time constant governing the speed at which the autonomous
+system reaches equilibrium. The time constant is, however, a fixed parameter:
+every unit forgets at the same speed, whatever it is observing.
+
+The contribution of liquid cells consists in making that speed \emph{dependent
+on the input and on the state}. The three cells compared in this work realise
+the idea in three different ways: LTC by explicitly modulating the time constant
+of the differential equation, CfC by replacing numerical integration with a
+closed-form approximation of its solution, and LRCU by making variable the
+capacitance of the equivalent circuit from which the equation derives. A
+systematic comparison of the family against classical recurrent networks, on
+accuracy, memory footprint and generalisation, is reported in
+\cite{zong2025lnnsurvey}; the same line of research has since been extended to
+structured state-space models \cite{hasani2023liquids4}, which are not employed
+in this work.
+
+\subsection{Liquid Time-Constant (LTC)}
+\label{sec:cell-ltc}
+
+The LTC cell \cite{hasani2021ltc} originates in an observation about the
+dynamics of non-spiking neurons: the membrane potential evolves as a first-order
+linear system, while the synaptic currents entering it are, in the steady state,
+a sigmoidal nonlinearity of the state of the presynaptic neurons, multiplied by
+the difference between the current potential and a reference potential $A$.
+Substituting that term into Equation~\eqref{eq:ctrnn} yields
+\begin{equation}
+  \frac{\mathrm{d}x(t)}{\mathrm{d}t}
+    = -\left[\frac{1}{\tau} + f\!\left(x(t), I(t), t, \theta\right)\right] x(t)
+      + f\!\left(x(t), I(t), t, \theta\right) A .
+  \label{eq:ltc}
+\end{equation}
+
+The difference with respect to Equation~\eqref{eq:ctrnn} is substantial. The
+network $f$ no longer determines only the derivative of the state, but appears
+also in the coefficient multiplying the state itself: it therefore acts as a
+variable time constant of the system,
+\begin{equation}
+  \tau_{\text{sys}}
+    = \frac{\tau}{1 + \tau f\!\left(x(t), I(t), t, \theta\right)} ,
+  \label{eq:tausys}
+\end{equation}
+and it is from this dependence that the adjective \emph{liquid} derives. Each
+unit of the hidden state may thus specialise on a time scale of its own and
+modify it according to what it observes --- reacting quickly to an input that
+changes, and retaining for a long time an information that does not --- whereas
+Equation~\eqref{eq:ctrnn} would impose the same speed in both cases.
+
+The model enjoys two properties proved in \cite{hasani2021ltc} that motivate its
+use in a control loop. The first is that the time constant remains bounded,
+$\tau/(1 + \tau W) \le \tau_{\text{sys}} \le \tau$, where $W$ collects the
+weights entering the unit under consideration; the second is that the state of
+each unit remains confined between $\min(0, A_{\min})$ and $\max(0, A_{\max})$
+over any finite interval, whatever the magnitude of the input. The second
+property is of greater practical relevance: the output of the recurrent core
+cannot diverge even when the observation contains anomalous values, a condition
+that in a real system occurs whenever a source of odometry degrades.
+
+Equation~\eqref{eq:ltc} admits no analytical solution and constitutes a
+\emph{stiff} system of equations, for which a Runge--Kutta integrator would
+require a prohibitive number of steps. The authors therefore propose a
+\emph{fused} solver, which replaces with the updated value only the occurrences
+of the state that appear linearly, and can thus be solved symbolically,
+obtaining the stability of the implicit Euler method at the cost of the explicit
+one:
+\begin{equation}
+  x(t + \Delta t)
+    = \frac{x(t) + \Delta t\, f\!\left(x(t), I(t), t, \theta\right) \odot A}
+           {1 + \Delta t\left[1/\tau + f\!\left(x(t), I(t), t, \theta\right)\right]} .
+  \label{eq:ltc-fused}
+\end{equation}
+
+\paragraph{In the implementation.}
+Equation~\eqref{eq:ltc-fused} is realised as written, with
+$f = \sigma(W_{\text{in}} u + W_{\text{rec}} x + b)$, with $\tau$ obtained as
+$\operatorname{softplus}(\tau_{\text{raw}})$ so as to guarantee its positivity,
+and with $A$ learnt. The step $\Delta t$ is fixed when the cell is constructed
+and repeated a configurable number of times per input step, following the
+\emph{unfolding} scheme prescribed by the authors. The initialisation of
+$\tau_{\text{raw}}$ places the time constants on an interval comparable with the
+rate of the data, so that the cell integrates meaningfully from the first step.
+
+\subsection{Closed-form Continuous-time (CfC)}
+\label{sec:cell-cfc}
+
+The use of a numerical solver, however efficient, remains the principal cost of
+continuous-time cells: every forward step requires one or more evaluations of
+the differential equation, and the cost is multiplied by the length of the
+sequence. The CfC cell \cite{hasani2022cfc} removes that cost by replacing the
+integration with a \emph{closed-form approximation} of the solution of
+Equation~\eqref{eq:ltc}, for which no analytical expression was previously
+known. The authors report a speed-up of between one and five orders of
+magnitude, in training and in inference, with respect to the equivalent
+solver-based models.
+
+The approximate solution takes the form
+\begin{equation}
+  x(t) = \sigma\!\left(-f(x, I; \theta_f)\, t\right) \odot g(x, I; \theta_g)
+       + \left[1 - \sigma\!\left(-f(x, I; \theta_f)\, t\right)\right] \odot h(x, I; \theta_h),
+  \label{eq:cfc}
+\end{equation}
+where $f$, $g$ and $h$ are three neural networks and $\sigma$ is the sigmoid.
+The reading of Equation~\eqref{eq:cfc} is immediate: $g$ and $h$ describe
+respectively the initial and the asymptotic behaviour of the unit, while the
+sigmoid interpolates between the two as a function of the elapsed time, with a
+transition speed determined by $f$, that is by the input and the state. Time
+appears here \emph{explicitly} as an argument, and not as a discretisation step:
+it is this property that makes the cell suited to a stream of observations at an
+irregular rate, since a long interval and a short one produce by construction
+two different values of the same gate.
+
+\paragraph{In the implementation.}
+The three networks share a common backbone, following the realisation proposed
+by the authors: a single layer $s = \tanh(W [\,u, x\,] + b)$ produces a hidden
+vector that three linear heads read, so that the cost of the cell remains close
+to that of a traditional recurrence. The gate takes the form
+$\gamma = \sigma\!\left(-\left(w_\tau + f(s)\right)\Delta t\right)$, in which
+$w_\tau$ is a per-unit learnt time constant, and the updated state is
+$x' = \gamma \odot g(s) + (1 - \gamma) \odot h(s)$.
+
+The initialisation of $w_\tau$ deserves a remark, since it determines whether
+the cell behaves as a continuous-time model at all. Set to zero, with a rate of
+the order of a tenth of a second, the argument of the gate starts within a
+hundredth of zero: the sigmoid pins the gate at $0.5$, the cell degenerates into
+a constant blend of two heads, and the time constant for which it exists plays
+no part. The initialisation adopted is therefore log-uniform over an interval of
+time constants physically sensible for the problem --- $w_\tau$ is a rate, hence
+the reciprocal of a time --- and places the gate in a usable region from the
+first step.
+
+\subsection{Liquid Resistance-Capacitance Unit (LRCU)}
+\label{sec:cell-lrcu}
+
+The third cell descends from the same equivalent electrical circuit from which
+LTC moves, but revises two of its simplifications. The first concerns
+saturation: in Equation~\eqref{eq:ltc} the synaptic conductance is not bounded
+from above, whereas in a real circuit it is; saturated-conductance models
+reintroduce the bound. The second, which constitutes the contribution proper to
+\emph{liquid-resistance liquid-capacitance} networks \cite{farsang2024lrc},
+concerns the membrane capacitance: in LTC it is constant, and only the
+resistance varies with the state. Making the capacitance variable as well yields
+\begin{equation}
+  \frac{\mathrm{d}x}{\mathrm{d}t}
+    = \varepsilon(w) \odot \left[-\,\sigma(f)\odot x + \tau(u) \odot e_{\ell}\right],
+  \label{eq:lrc}
+\end{equation}
+where $\sigma(f)$ is the forget conductance, $\tau(u)$ the update conductance
+towards the resting potential $e_{\ell}$, and $\varepsilon(w)$ is the
+\emph{liquid elastance}, the reciprocal of the capacitance, itself a function of
+the input and of the state. The third factor acts on the whole derivative: it
+does not establish \emph{towards what} the unit evolves, but \emph{how quickly}
+it does so, and is therefore a second mechanism of temporal modulation added to
+the one already present in LTC.
+
+The authors observe that integrating Equation~\eqref{eq:lrc} with an explicit
+Euler method of order one and a single unfolding step yields a discrete
+recurrence --- the LRCU unit --- structurally akin to a gated RNN, in which
+$\varepsilon$ plays the role of the update gate of a GRU \cite{cho2014gru},
+with in addition the conductance structure of the circuit from which it derives.
+It is in this form that the cell is employed in the present work, since it
+thereby retains the cost of a traditional recurrence.
+
+\paragraph{In the implementation.}
+The update is
+\begin{equation}
+  x' = x + \Delta t\, \varepsilon \odot
+       \left(-f \odot x + z \odot e_{\ell}\right),
+  \label{eq:lrcu}
+\end{equation}
+with the three quantities computed as
+\begin{align}
+  f           &= \operatorname{softplus}(g_{\max}) \odot \sigma\!\left(W^{\text{in}}_f u + W^{\text{rec}}_f x + b_f\right), \\
+  z           &= \operatorname{softplus}(k_{\max}) \odot \sigma\!\left(W^{\text{in}}_z u + W^{\text{rec}}_z x + b_z\right), \\
+  \varepsilon &= \sigma\!\left(W^{\text{in}}_\varepsilon u + w_\varepsilon \odot x + v_\varepsilon\right).
+\end{align}
+The forget and update conductances are therefore sigmoids scaled by a learnt
+maximum conductance, according to the saturated form discussed above, while the
+elastance has a diagonal rather than a full recurrence. The cell holds three
+input matrices and two complete recurrent matrices, and is for this reason the
+most expensive of the three at equal state width: the comparison of
+Chapter~\ref{ch:results} is to be read bearing that asymmetry in mind, as
+reported in Table~\ref{tab:architectures}.
+
+\subsection{Time, and the asymmetry it introduces}
+\label{sec:cell-time}
+
+The three cells treat time in two distinct ways, and the difference must be
+declared because it bears on the comparison. In the CfC the elapsed time appears
+explicitly in Equation~\eqref{eq:cfc} as the argument of the gate: the cell
+therefore receives the \emph{real} $\Delta t$ between two consecutive
+observations and adapts its transition to it. In LTC and LRCU time appears
+instead as the discretisation step of a numerical integration
+(Equations~\eqref{eq:ltc-fused} and~\eqref{eq:lrcu}), fixed when the cell is
+constructed; the real $\Delta t$ reaches them as an additional component of the
+input, which is the reason why their observation vector is \num{42} values wide
+rather than \num{41}.
+
+The asymmetry is a consequence of the formulation and not a choice of the
+implementation. Since the rate of the observations is not constant
+(Section~\ref{sec:observation-recording}), the constant step is inexact for a
+non-negligible fraction of the samples, and the same quantity reaches the CfC in
+a more informative form than that in which it reaches the other two. Supplying
+LTC and LRCU with a per-sample integration step would alter their update rule
+--- and, in the case of LTC, would invalidate the stability bounds recalled in
+Section~\ref{sec:cell-ltc}, which presuppose a fixed step --- so that the
+comparison would be between a cell and a variant of it, rather than between the
+cells proposed in the literature.
+
+\section{Wiring: Dense and NCP}
+\label{sec:lnn-wiring}
+
+The second choice concerns the connectivity of the recurrent core. In the dense
+variants every weight matrix is full and the cascade is direct: fusion, first
+cell, second cell, head.
+
+The alternative variants draw on \emph{Neural Circuit Policies}
+\cite{lechner2020ncp}, in which a continuous-time cell is embedded in a sparse
+wiring derived from the nervous system of the nematode \emph{Caenorhabditis
+elegans}. The original wiring organises the neurons in four groups ---
+sensory neurons, interneurons, command neurons and motor neurons --- with sparse
+connections between adjacent groups, recurrence concentrated in the command
+group, and synapses whose sign, excitatory or inhibitory, is established by the
+structure of the circuit rather than learnt. The authors show that an end-to-end
+driving policy can be realised with \num{19} control neurons and \num{253}
+synapses, and attribute to such compactness three advantages: interpretability
+of the learnt policy, robustness with respect to perturbations of the input, and
+a reduction of the parameter space.
+
+Of that approach the present work adopts the two elements that can be applied to
+a recurrent core of fixed width without redesigning its topology. The first is
+\emph{signed sparsity}: the matrices of each cell are multiplied by a mask
+generated at initialisation, which removes a fraction of the connections and
+assigns to each of the remaining ones a constant sign that training cannot
+reverse. The density is \num{0.6} on the input connections and \num{0.8} on the
+recurrent ones. The masks are registered as buffers and are therefore part of
+the checkpoint, so that a reloaded network resumes exactly the connectivity with
+which it was trained. The second is the presence of \emph{paths that bypass one
+level}, analogous to the diagonal connections of the biological circuit: from
+the input to the second cell, and from the first cell to the head, both at
+density \num{0.4}. The former is supported natively by the cells; the latter,
+since the head is a linear layer and not a cell, is realised as a separate
+masked additive path, leaving the main weights of the head dense.
+
+The four-group topology of the original wiring is not adopted. The reason is
+that the architecture described in this chapter places the recurrent core
+between a convolutional encoder and a calibrated head, both dense and common to
+all variants: introducing a sensory group and a motor group would mean modifying
+the input and output paths as well, and the comparison would no longer isolate
+connectivity alone. What the sparse variants of this work measure is therefore
+the contribution of signed sparsity and of the bypass paths, not that of the
+complete circuit proposed in \cite{lechner2020ncp}; the designation NCP is
+retained for continuity with the literature and with the implementation, but is
+to be understood in this restricted sense.
+
+The dense variants have neither masks nor bypass paths, and are identical in
+everything else --- encoder included --- to their sparse counterpart. The pair
+therefore isolates exactly what sparsity and the bypass paths are worth.
 
 \section{Sparse Convolutional Encoder}
 \label{sec:sparse-encoder}
 
+The encoder reduces the local voxel map to a descriptor of fixed length. It is a
+four-level pyramid of \num{16}, \num{24}, \num{32} and \num{48} channels, each
+preceded from the second onwards by a downsampling stage of stride~\num{2}. The
+convolutions are \emph{submanifold} \cite{graham2018submanifold}, that is they
+keep the computation anchored to the occupied voxels alone instead of densifying
+the grid: it is the property that makes tractable an input in which almost all
+cells are empty. Every level
+is pooled per sample by a reduction over the active sites, and the four
+descriptors are concatenated into a vector of \num{200} channels.
+
+Two normalisation choices deserve to be motivated, since neither follows from
+the pyramid itself. The first is the use of \emph{group normalisation} in place
+of \emph{batch normalisation}. Batch statistics would here be computed over the
+active voxels of whatever samples share a batch, and the number of active voxels
+varies appreciably from one recording to another: the statistics would therefore
+depend on the composition of the batch rather than on the scene, and the
+descriptor produced for a fixed input would move from one epoch to the next.
+Group normalisation removes that dependence, since it normalises within each
+sample. The second is a \emph{layer normalisation} applied to the pooled output.
+The dense branch reaches the fusion already standardised to unit variance,
+whereas the pooled descriptor carries the scale of the pooling: without a
+normalisation the point-cloud branch would dominate the fusion by scale alone,
+that is for a reason unrelated to its information content.
+
+The encoder accepts a different spatial shape at every call, because the
+convolutions operate on the offsets between active voxels and not on absolute
+indices. It is not, however, invariant to the voxel pitch: a kernel of fixed
+size covers a different physical extent at a different resolution, which is the
+reason why the split of the corpus stratifies on that parameter
+(Section~\ref{sec:sl-split}).
+
 \section{Observation Normaliser and Model Embedding}
 \label{sec:aux-modules}
 
-\section{PyTorch Module Implementation}
+\paragraph{The observation normaliser.}
+The \num{41} dense values enter the network in a fixed order --- goal, odometry,
+state --- and are transformed by a fixed affine map whose mean and standard
+deviation are \emph{estimated from the data before training} rather than learnt.
+For the LTC and LRCU variants the values are \num{42}, because the real elapsed
+time is concatenated by the trainer (Section~\ref{sec:lnn-taxonomy}).
 
-\section{Networks Implementation}
+The order of the fields is part of the contract and not an internal convention:
+getting it wrong raises no error, because the widths continue to match, and
+simply produces wrong predictions.
+
+\paragraph{The robot-model embedding.}
+The model identifier is a categorical variable written as the last value of the
+state block. Left there, it reaches the network as a large continuous number,
+which the normaliser reduces to a couple of arbitrary values and which says
+nothing about the identifiers being unordered categories. The embedding assigns
+to each robot model a vector of its own, of eight dimensions. The table of
+identifiers is a buffer, so every checkpoint carries its own mapping, and one
+row is reserved for a model never seen in training.
+
+\section{Output Calibration}
+\label{sec:output-calibration}
+
+The final stage of the network --- a linear head followed by a recalibration ---
+produces the six components of the command directly in physical units. Nothing
+saturates them against the kinematic limits of the platform: what the network
+says is what goes out on the command channel.
+
+The recalibration exists for a precise reason. A head trained with a squared
+error learns the conditional mean of the action; where the demonstration is
+multimodal for the same observation --- an alternation between standstill and
+travel near the velocity limit, with little in between, is enough --- that mean
+falls between the modes and belongs to neither. The output of such a head is
+therefore systematically narrower than the commands it was trained on. In open
+loop this is an error like any other; in closed loop, where the command becomes
+the next observation, it is a robot that travels at a fraction of the
+demonstrated speed and takes correspondingly longer to reach its goal, so that
+the shortfall compounds along the trajectory. The amplitude metrics of
+Section~\ref{sec:metrics-amplitude} exist to measure it.
+
+The calibration is the least-squares line from prediction to command, per
+component,
+\begin{equation}
+  a_i = \frac{\operatorname{cov}(\hat{y}_i, y_i)}{\operatorname{var}(\hat{y}_i)},
+  \qquad
+  b_i = \mathbb{E}[y_i] - a_i\,\mathbb{E}[\hat{y}_i],
+\end{equation}
+estimated on the validation set at every epoch and stored as buffers. Being the
+best affine map of the model's own output, it can never do worse than the best
+constant predictor. The gain can be rewritten as
+$\rho_i\,\sigma_{y_i}/\sigma_{\hat{y}_i}$, and therefore restores amplitude only
+in proportion to how much the model actually tracks the command. The alternative
+of enforcing a match of the \emph{spreads} --- a gain equal to
+$\sigma_{y_i}/\sigma_{\hat{y}_i}$, which makes the output exactly as wide as the
+demonstration --- ignores the correlation and amplifies mostly noise wherever
+the model tracks weakly, and may therefore leave a weakly tracked component
+worse than the constant predictor, which the least-squares line cannot do.
+
+Two properties must be stated. The first is that the model must be
+\emph{trained} with this stage at the identity: it lives in the forward pass, so
+a gain left in place during the following epoch is optimised through, and the
+network learns to shrink its raw output by exactly the factor the gain restores.
+The second is what the calibration cannot do: being monotone per component, it
+cannot separate two modes that the model reports as a single number. It makes
+the answer the right size, not more correct.
+
+\section{Auxiliary Geometry Head}
+\label{sec:geometry-head}
+
+Imitation alone teaches the encoder very little: the demonstrator flies a path
+planned on the true geometry of the world, so its command depends on the local
+map only indirectly, and the map matters only in the instants in which the
+vehicle deviates for an obstacle. The geometry surrounding the robot, however,
+is present in every frame and requires no labels: the cloud itself states where
+the obstacles are.
+
+The auxiliary head reads the descriptor of the encoder and predicts that
+geometry: the clearance in eight azimuth sectors and the height above the
+ground. The targets are measured on the cloud of each frame with the same
+functions the perception bridge uses on board, so that the encoder is taught
+exactly the quantity the reinforcement learning reward prices
+(Section~\ref{sec:rl-reward}). The distances are divided by the map radius of
+the episode before the loss, so that grids of different extent share a single
+scale and a sector with nothing in range reads exactly~\num{1}; entries the
+bridge could not measure are left out of the loss rather than counted as zero.
+
+Two design choices keep the head in its role. It is deliberately narrow --- a
+single hidden layer --- because its purpose is to shape the encoder, and a head
+wide enough to decode a poor descriptor on its own would absorb the gradient
+instead of transmitting it. And it is an auxiliary task and not part of the
+policy: it lives beside the network in the trainer and is saved in a file of its
+own, so that the checkpoint inference loads keeps exactly the structure of the
+network it executes.
+
+\section{PyTorch Module Implementation}
+\label{sec:module-implementation}
+
+The formulations of the preceding sections are realised in PyTorch on two
+levels. The first collects the \emph{cells} --- the three recurrent units, in
+their dense and sparsely wired versions --- and the stateless modules the
+architecture employs: encoder, normaliser, embedding, calibration and auxiliary
+head. The second collects the \emph{networks}, each of which composes those
+modules into a complete architecture. The separation mirrors that of the
+chapter: the first level contains what is drawn from the literature, the second
+what was designed for this problem.
+
+\subsection{The interface of the cells}
+
+All cells derive from a base class that establishes two things: the signature of
+the forward step, and the handling of the recurrent state. What the base class
+deliberately does \emph{not} contain is the update equation, not even in those
+parts in which two cells would coincide: the equation is the element that
+defines the cell, and remains readable in the file of the cell that realises it.
+It follows that replacing LTC with CfC inside a network requires no change to
+the network.
+
+The state lives in the cell as an ordinary tensor and not as a registered
+buffer. The distinction has a practical consequence: the state does not enter
+the dictionary of the weights, so that a checkpoint contains the learnt
+parameters and not the memory of one particular sequence. It is allocated at the
+first call, with the size of the incoming batch, and is manipulated through four
+operations that training employs at distinct moments:
+
+\begin{itemize}
+  \item \texttt{get\_state} returns a copy \emph{detached} from the
+        differentiation graph. It is the initial condition from which the
+        following window resumes in truncated backpropagation through time
+        (Section~\ref{sec:sl-sequences}): without the detachment, the current
+        window would carry with it the graph of the preceding one.
+  \item \texttt{set\_state} restores a copy so obtained, or clears the state
+        when it receives a null value.
+  \item \texttt{detach\_state} severs the graph after every optimiser step; in
+        its absence the graph would grow without bound from one mini-batch to
+        the next.
+  \item \texttt{reset\_state} zeroes the state, either for the whole batch or
+        only for the positions indicated by a boolean mask.
+\end{itemize}
+
+The last operation is the one that makes the cells usable in the vectorised
+environment of Chapter~\ref{ch:training}, in which the episodes of the robots of
+the fleet end at different instants: only the positions corresponding to
+finished episodes must restart from a null state, while the others continue with
+their own memory.
+
+\begin{lstlisting}[language=Python, caption={Selective reset of the recurrent state.}, label={lst:reset}]
+def reset_state(self, mask=None) -> None:
+    if self._x_t is None:
+        return
+    if mask is None:            # whole batch
+        self._x_t = None
+    else:                       # only the flagged entries
+        # clone first: the tensor may still belong to the
+        # autograd graph, and must not be written in place
+        self._x_t = self._x_t.clone()
+        self._x_t[mask] = 0.0
+\end{lstlisting}
+
+\subsection{The sparse wiring}
+
+The wiring described in Section~\ref{sec:lnn-wiring} is realised as a mask
+generated once when the cell is constructed and registered as a buffer, so that
+it is saved together with the weights and a reloaded network resumes the
+connectivity with which it was trained. The mask takes values in
+$\{-1, 0, +1\}$: the null value removes the connection, the sign makes it
+permanently excitatory or inhibitory. It is applied by multiplying it into the
+matrix it governs, so that the gradient reaches only the connections that are
+present and the sign cannot be reversed by training.
+
+\begin{lstlisting}[language=Python, caption={Generation of the signed sparse mask.}, label={lst:mask}]
+def signed_mask(shape, density: float) -> torch.Tensor:
+    active = torch.bernoulli(torch.full(shape, density))
+    sign   = torch.where(torch.rand(shape) < 0.5, -1.0, 1.0)
+    return active * sign
+\end{lstlisting}
+
+\subsection{The composition of a network}
+
+Every network builds in its own constructor everything that defines it ---
+encoder, cells, heads --- rather than inheriting it from a hierarchy. The choice
+has a cost in repetition and a precise benefit: the variant that runs on board
+the robot is self-contained, and the inference node of Chapter~\ref{ch:pipeline}
+carries its file and the cells it employs, without depending on the rest of the
+training repository.
+
+From the common base class the networks inherit instead two things. The first is
+the propagation of the state: the four operations described above are applied in
+sequence to all the cells of the network, so that whoever trains manipulates the
+state of the network and not that of the individual units. The second is a set
+of properties by which the network \emph{declares itself} --- whether it is
+recurrent, whether it requires the elapsed time as an argument, whether it
+consumes a point cloud, whether it uses the robot-model embedding. Both trainers
+query those properties in order to build the batch and to compose the call, and
+neither contains a check on the type of the network: adding an architecture
+therefore does not entail modifying the trainers.
+
+The forward step reflects the architectural scheme directly. The three input
+branches are gathered into a single fusion vector, which traverses the two cells
+in cascade; in the sparse variants it also reaches the second cell as a bypass,
+while the output of the first is added to the pre-activation of the head through
+its own masked path; the result is finally emitted through the calibration of
+Section~\ref{sec:output-calibration}.
+
+\begin{lstlisting}[language=Python, caption={Forward step of a sparse variant, from the three sources to the command.}, label={lst:forward}]
+# the three branches, fused into one vector
+x  = self.fuse(obs, coords, feats, spatial_shape, model_id, encoded)
+
+h1 = self.cfc_1(x, dt)
+h2 = self.cfc_2(h1, dt, skip=x)    # input -> cell 2, past cell 1
+
+out = self.hidden_out(self.tanh_1(h2)) \
+    + h1 @ (self._skip_hidden_W * self._skip_hidden_mask)
+
+return self.emit(self.tanh_2(out))   # head -> calibration
+\end{lstlisting}
+
+\subsection{The selection of the architecture}
+
+The six architectures are declared in a single table, which associates with each
+of them the class that realises it and the hyper-parameters that define it. A
+construction function consults the table and returns the requested network; both
+trainers and the measurement tools go through that function. The tabular form,
+in place of a chain of conditional branches, has two intended consequences: the
+dimensions of all the architectures are readable side by side, which makes
+verifiable the claim that the comparison holds everything equal except the cell
+and the wiring; and the addition of an architecture is a single line, which
+cannot forget a branch.
+
+Declared in the same place is the set of architectures that integrate with a
+fixed step, that is the four LTC and LRCU variants
+(Section~\ref{sec:cell-time}). Membership of that set determines two things that
+must necessarily agree: the width of the input layer of the network, increased
+by one component, and the decision of the trainer to concatenate the elapsed
+time to the observation before the call. Since both read the same declaration,
+they cannot diverge --- and a divergence would be silent, given that a network
+built for \num{41} inputs and fed with \num{42} values would raise a shape error
+only if the two widths did not happen to coincide.
+
+\begin{lstlisting}[language=Python, caption={The architecture table and the declaration of the fixed step.}, label={lst:table}]
+# the cells that integrate with a fixed step, declared once
+DT_FOLDED_INTO_OBS = frozenset({
+    Model_types.SPARSECONV_LTC_NCP,
+    Model_types.SPARSECONV_LRCU_NCP,
+    Model_types.SPARSECONV_LTC,
+    Model_types.SPARSECONV_LRCU,
+})
+
+ARCHITECTURES = {
+    Model_types.SPARSECONV_CFC_NCP: (SparseConv_CfC_NCP_Network,
+        dict(connections=0.6, fusion_dim=192, head_dim=128,
+             cfc1_out_dim=80, cfc2_out_dim=80,
+             cfc1_hidden_dim=80, cfc2_hidden_dim=80)),
+    Model_types.SPARSECONV_LTC_NCP: (SparseConv_LTC_NCP_Network,
+        dict(connections=0.6, fusion_dim=192, head_dim=128,
+             ltc1_out_dim=80, ltc2_out_dim=80)),
+    # ... one entry per architecture
+}
+
+# the extra input goes through the same declaration
+in_features = obs_dim + 1 if arch in DT_FOLDED_INTO_OBS \
+              else obs_dim
+\end{lstlisting}
+
+\subsection{The checkpoint}
+
+At the end of every epoch training writes a directory containing the weights of
+the network, those of the auxiliary head in a separate file, the state of the
+optimiser and of the scheduler, and a metadata file. The separation of the
+auxiliary head is not incidental: it does not belong to the policy
+(Section~\ref{sec:geometry-head}), and keeping it out of the weight file allows
+the inference node to load the latter strictly, that is rejecting any parameter
+that does not belong to the network it intends to execute.
+
+The metadata file declares the architecture, the options with which its encoder
+was built and the observation contract the network assumes, besides the
+parameters of the training session and the position from which it may resume.
+The principle is that \emph{nothing infers an architecture from the shape of its
+weights}: whoever reloads a checkpoint --- the reinforcement training that
+starts from the imitated weights, the measurement tools, the on-board node ---
+rebuilds the network from the declaration and loads the weights into it, rather
+than attempting to guess its structure. An inference from the shapes would work
+in most cases and fail silently in the remaining ones, since two variants
+differing only in the wiring have matrices of the same dimensions.
+
+\section{Network Architectures Under Comparison}
 \label{sec:networks-implementation}
+
+The comparison of Chapter~\ref{ch:results} concerns the six architectures that
+consume the point cloud, obtained by crossing the three cells with the two
+wirings, together with a seventh network that is not a candidate but a control
+(Table~\ref{tab:architectures}).
+
+\begin{table}[H]
+  \centering
+  \caption{The six architectures under comparison and the stateless control:
+           what distinguishes them is the cell and the wiring; the parameter
+           count is a consequence, not a choice. For the control the last column
+           is the share of the two linear layers that take the place of the
+           cells.}
+  \label{tab:architectures}
+  \begin{tabular}{@{}lccrr@{}}
+    \toprule
+    \textbf{Network} & \textbf{Input} & \textbf{Real $\Delta t$} & \textbf{Parameters} & \textbf{in the cells} \\
+    \midrule
+    \met{SparseConv_CfC_NCP}  & 41 & yes & 282\,430 & 31.6\,\% \\
+    \met{SparseConv_LTC_NCP}  & 42 & no  & 243\,902 & 20.7\,\% \\
+    \met{SparseConv_LRCU_NCP} & 42 & no  & 331\,582 & 41.6\,\% \\
+    \met{SparseConv_CfC}      & 41 & yes & 256\,830 & 28.7\,\% \\
+    \met{SparseConv_LTC}      & 42 & no  & 218\,302 & 16.1\,\% \\
+    \met{SparseConv_LRCU}     & 42 & no  & 275\,262 & 33.4\,\% \\
+    \midrule
+    \met{SparseConv_MLP} (control) & 42 & no & 205\,182 & 10.7\,\% \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{The control.}
+The seventh row is the six with the recurrence taken out: the same encoder,
+fusion, stage widths, head and output stage, with two plain linear layers where
+the cells were, and therefore no state carried from one step to the next. It
+answers the question the six cannot answer among themselves --- what the memory
+is worth on this data --- and it sets the bar a recurrent variant has to clear:
+one that does not beat the control has not earned its state. Since it has no
+integration step, the elapsed interval reaches it as it reaches LTC and LRCU, as
+a trailing component of the observation.
+
+\paragraph{What is held equal.}
+The observation and its normalisation, the encoder and its configuration, the
+width of the fusion, the width of the two recurrent states, the head, the output
+stage with its calibration, and every training setting.
+
+\paragraph{What is not, and is to be read alongside the result.}
+The parameter count and the way in which time reaches the cell. The spread of
+the parameter counts is intrinsic: at equal state width the three cells have
+very different weight densities, and LRCU carries nearly three times as many as
+LTC. Forcing equal counts would mean unequal widths, which changes what is being
+compared; comparing at equal width and reporting the counts is the more honest
+of the two alternatives.
+
+\paragraph{Sizing.}
+The widths were chosen for the problem rather than for the corpus at hand, and
+are held equal across the six architectures so that the comparison does not
+become a comparison of capacities. Whether the capacity so chosen is the right
+one is a question for the experiments rather than for this chapter: the relation
+between validation and training loss (Section~\ref{sec:metrics-loss}) and the
+occupancy of the recurrent state (Section~\ref{sec:metrics-health}) are logged
+for that purpose, and Chapter~\ref{ch:results} reads them. What belongs here is
+the direction of the trade-off: a narrower recurrent state would remove the
+headroom that reinforcement learning is expected to use for exactly the
+behaviour the supervised phase cannot teach.
+
+\paragraph{What to judge on.}
+Not on the loss alone. The metrics defined in
+Section~\ref{sec:metrics-supervised} separate what the loss conflates: whether
+the model beats echoing the velocity it has already been given, whether it
+commands as much as the demonstration did --- which a squared error rewards
+\emph{not} doing --- and how it behaves separately on the two classes of robot,
+which differ enough that an average hides one of them.

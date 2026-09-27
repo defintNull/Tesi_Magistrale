@@ -1,56 +1,882 @@
 %!TEX root = ../main.tex
-\chapter{Training}
+\chapter{Training Methodology}
 \label{ch:training}
 
-\section{Strategy}
+\section{Two-Stage Strategy and Rationale}
 \label{sec:training-strategy}
 
+\begin{figure}[htbp]
+  \centering
+  \linespread{1}\selectfont
+  \begin{tikzpicture}[x=1cm, y=1cm, blk/.append style={minimum width=34mm}]
+    \node[ext, minimum width=34mm] (corpus) at (0,0)    {recorded corpus};
+    \node[lyr, minimum width=34mm] (sup)    at (0,-1.35) {imitation\\\footnotesize cap-scaled MSE};
+    \node[blk] (w)      at (0,-2.70) {weights};
+    \node[lyr, minimum width=34mm] (rl)     at (0,-4.05) {reinforcement\\\footnotesize recurrent PPO};
+    \node[blk] (pol)    at (0,-5.40) {policy};
 
-\section{Supervised Learning}
+    \draw[flow] (corpus) -- (sup);
+    \draw[flow] (sup) -- (w);
+    \draw[flow] (w) -- (rl);
+    \draw[flow] (rl) -- (pol);
+
+    \node[ext, minimum width=30mm] (fleet) at (-4.4,-4.05)
+      {fleet of parallel slices\\\footnotesize the pipeline, $N$ times};
+    \draw[thin flow] (fleet) -- (rl);
+
+    \node[note, anchor=west, text width=36mm] at (2.1,-1.35)
+      {learns on the states the\\demonstrator visited};
+    \node[note, anchor=west, text width=36mm] at (2.1,-2.70)
+      {already deployable\\on the robot};
+    \node[note, anchor=west, text width=36mm] at (2.1,-4.05)
+      {learns on the states it\\generates itself};
+  \end{tikzpicture}
+  \caption{The two stages of Section~\ref{sec:training-strategy}. The first
+           produces both the weights deployed on the robot and the starting
+           point of the second; the second refines them on the distribution the
+           policy itself generates, which is where the behaviour the local map
+           should determine finally has a consequence.}
+  \label{fig:two-stage}
+\end{figure}
+
+The policy described in Chapter~\ref{ch:lnn} is trained twice
+(Figure~\ref{fig:two-stage}), and the two stages answer two limitations that
+compensate for one another.
+
+Imitation learns, from recorded routes, the command the pilot gave from the
+observation the robot had. It is inexpensive --- the data already exist,
+produced by the pipeline during normal use of the system --- and yields a
+sensible starting behaviour. It carries, however, the structural defect recalled
+in Section~\ref{sec:rel-imitation-rl}: the policy is evaluated on the
+distribution of the states the demonstrator visited, whereas in execution it
+visits those produced by its own actions. The defect is aggravated by the nature
+of the demonstration: the pilot, human or automatic, plans its route on the true
+geometry of the world, so that its command depends on the local map only
+indirectly. Imitation teaches the reproduction of a behaviour, not the reaction
+to what is observed.
+
+Reinforcement learning does not have that defect, since it learns on the
+distribution it generates itself and judges actions by the consequences they
+produce. It requires, however, a number of interactions a real robot cannot
+provide, each of which may destroy the vehicle. It is therefore carried out in
+simulation, on a fleet of parallel environments.
+
+The strategy adopted is the composition of the two: the first stage produces the
+weights the robot flies with and the starting point of the second; the second
+refines them on the correct distribution, where the behaviour the local map
+ought to determine --- avoiding an obstacle --- finally has a consequence.
+
+\paragraph{What the two stages share.}
+The two procedures are implemented separately and share exactly three things:
+the architecture table of Section~\ref{sec:module-implementation}, the way a
+point cloud is packed for the encoder, and the thermal guard that suspends
+training when the temperature of the machine exceeds a threshold. The sharing is
+deliberately minimal and deliberately no greater: how the weights were fed is
+part of what the weights mean, and two implementations of the same packing would
+diverge without raising any error.
+
+Both stages are moreover validated on simpler tasks before being applied to the
+problem --- a synthetic task for the first, a standard control environment for
+the second --- according to the protocol described in
+Section~\ref{sec:exp-protocol}.
+
+\section{Supervised Stage}
 \label{sec:training-supervised}
 
-\subsection{Dataset and Data Pipeline}
+\subsection{Corpus Acquisition and Recording Protocol}
+\label{sec:sl-corpus}
+
+The corpus is recorded through the pipeline itself, by the node described in
+Section~\ref{sec:observation-recording}: every sample pairs the observation
+available to the vehicle with the command that followed from it. A property no
+other arrangement could guarantee follows from this: the distribution on which
+the network is trained is produced by the same code that will feed it on board.
+
+One episode corresponds to one directory. A mission may record a flight whole or
+in two segments --- the outward and the return leg --- each of which becomes an
+episode of its own while sharing with the other the world, the starting position
+and the goal. It is a circumstance the data split must be aware of, and
+Section~\ref{sec:sl-split} returns to it.
+
+Every episode carries a metadata file describing it: the robot, the world, the
+voxel pitch, the list of the archives that compose it, and a statistical summary
+of the recorded commands. The summary is accumulated \emph{while} writing rather
+than derived afterwards, because deriving it afterwards would mean reopening
+every archive of the corpus: an operation of seconds over ten gigabytes and
+impracticable over a terabyte, which would moreover have to be repeated at every
+change of seed.
+
+\subsection{Dataset Format: Sharded Episodes and Manifest}
 \label{sec:sl-dataset}
 
-\subsection{Loss Function}
+Episodes are stored as sequential archives, read as a stream rather than loaded
+into memory. The format imposes a property that conditions the structure of the
+sample: since the archives are read in shuffled order, every sample must stand
+on its own. The state block is therefore repeated in each sample although it is
+constant within a recording --- a few dozen bytes against the tens of kilobytes
+occupied by the voxels --- rather than being stored once per episode.
+
+Building the \emph{manifest} of the corpus, that is the list of the episodes
+with their properties, reads the metadata files exclusively and never opens an
+archive. It is this separation that makes it possible to recompute a data split
+in negligible time.
+
+\subsection{Stratified Split and Episode Balancing}
+\label{sec:sl-split}
+
+Splitting per \emph{sample} would produce a meaningless evaluation: adjacent
+frames of the same flight are nearly identical, and putting some of them in
+training and the others in validation means measuring training and calling it
+validation.
+
+Splitting per \emph{episode} repeats the same error one level higher, for the
+reason set out in Section~\ref{sec:sl-corpus}: the two segments of a flight
+recorded in two parts share world, start and goal, and would end up on opposite
+sides of the split. The unit adopted is therefore the \emph{run}, declared in
+the metadata, of which a flight recorded whole is the particular case with a
+single segment.
+
+Runs are moreover stratified on what changes the distribution of the data: the
+robot model, since different platforms command different things; the world,
+since the statistics of the obstacles change; the voxel pitch, since the
+quantisation changes and with it the extent of the grid
+(Section~\ref{sec:observation-cloud}); and the set of command components the
+episode actually exercises, since an episode in which the robot never turns
+teaches nothing about turning.
+
+Two provisions complete the protocol. The split is governed by a seed of its
+own, distinct from the one that initialises the weights and the shuffling:
+repeating a session under a different seed therefore measures what that session
+is worth and not what a different split is worth. And the test partition is read
+once, at the end, since consulting it between sessions would turn it into a
+second validation partition.
+
+\subsection{Sequence Chunking and Hidden-State Propagation}
+\label{sec:sl-sequences}
+
+A recurrent network is trained on windows of consecutive samples. The length of
+the window fixes the horizon over which the gradient propagates backwards; the
+step between the start of one window and the start of the next determines
+instead how many windows are obtained from the same recordings, and a step
+shorter than the length makes them overlap, which is the cheapest answer
+available to a small corpus.
+
+A window is cut wherever the interval between two samples exceeds a threshold: a
+sequence that straddles a prolonged silence is not a sequence. The first step of
+every window is moreover given the median interval of the window itself rather
+than a null value, because a null interval pins the gate of the CfC cell at
+exactly $0.5$ --- the degeneration discussed in Section~\ref{sec:cell-cfc} ---
+precisely at the step where the state has just been cleared.
+
+The recurrent state is governed by the mechanism of
+Section~\ref{sec:module-implementation}: cleared before every window, because
+each is an independent sample of the distribution of trajectories and carrying
+into it the memory of the previous one would mean training on a history the
+sample does not have; and detached from the graph after every optimiser step,
+because otherwise the graph would grow from one mini-batch to the next until it
+covered the whole epoch.
+
+\paragraph{The composition of the batch.}
+The sparse convolutional operator accepts a single grid shape per call, so that
+a batch may contain only samples of the same grid. The most immediate
+realisation --- one episode per batch --- satisfies the constraint but imposes a
+stronger one than necessary: with overlapping windows a batch then holds few
+distinct scenes, all of the same recording, and the encoder has nothing to
+contrast within it. The loader therefore keeps several archives open at once and
+fills one pending batch per grid drawing from all of them, so that the effective
+constraint is the grid and not the episode. Validation and test keep one episode
+per batch regardless, so that their figures remain comparable across sessions.
+
+\subsection{Data Augmentation}
+\label{sec:sl-augmentation}
+
+The only transformation applied to the data is the left--right reflection of a
+training window, through the longitudinal plane of the body, before it is
+batched. The reflected flight is as valid as the recorded one for a vehicle
+symmetric about its own longitudinal axis, and it doubles the scenes the encoder
+observes on each side.
+
+The reflection is correct only if applied to \emph{everything} that has a side,
+and this is the delicate point of the transformation: the lateral index of the
+cloud about the centre of the grid, the lateral component of the pose, of the
+goal and of the centre of mass, the lateral velocity and command, and the axial
+quantities --- the roll and yaw rates, and the corresponding components of both
+quaternions. The targets of the auxiliary supervision of
+Section~\ref{sec:sl-geometry} swap sector $k$ for sector $-k$. A window is
+reflected whole and never step by step, and validation never is.
+
+\subsection{Observation Normaliser Fitting}
+\label{sec:sl-normaliser}
+
+The affine transform described in Section~\ref{sec:aux-modules} is estimated
+from the data before training, over a bounded number of batches, and stored
+inside the weights. It follows that inference on board applies it without
+knowing: there is no normalisation step external to the network that a node
+might forget to perform.
+
+Features of zero variance require explicit treatment. Since the normalisation
+divides by the standard deviation bounded below by a minimum value, a feature
+constant over the corpus would be divided by that minimum, and the day it ceased
+to be constant --- a tilted goal, a limit changed in the configuration --- it
+would enter the network amplified by six orders of magnitude. The deviation of
+such features is therefore raised to one. The correction is neutral on constant
+data, since a deviation from the mean that is identically zero remains zero
+whatever the divisor.
+
+\subsection{Cap-Scaled Mean Squared Error Loss}
 \label{sec:sl-loss}
 
-\subsection{Output Calibration}
+The mean squared error computed on the raw command is dominated by the component
+that carries the most energy, and the six components of a velocity command
+differ from one another by orders of magnitude in variance: the gradient
+reaching the small ones is negligible, and they are in effect never learnt.
+
+The customary correction --- dividing by the per-dimension standard deviation
+measured on the corpus --- is not applicable here, for two reasons. Some
+components are identically zero over the whole corpus, so their scale would be
+an arbitrary value of convenience. And every scale would shift as new recordings
+arrived, silently reweighting the loss function between sessions meant to be
+comparable.
+
+The loss adopted divides instead by the \emph{velocity limits declared by the
+robot}, which are already present in the state block of the observation
+(Section~\ref{sec:observation-vector}); its formal definition is given in
+Section~\ref{sec:metrics-loss}. Three properties follow. The error becomes a
+fraction of what that robot can do, so that platforms with very different limits
+are directly comparable. The scale is a property of the platform and not of the
+corpus, and does not move when data is added. And a heterogeneous fleet requires
+no special case, since every sample carries its own limits.
+
+\subsection{Auxiliary Geometry Supervision}
+\label{sec:sl-geometry}
+
+For the reason set out in Section~\ref{sec:geometry-head}, imitation alone
+provides the encoder with a weak signal. The auxiliary supervision adds a second
+objective that requires no labels.
+
+The targets are measured once per corpus, before training, on the cloud of each
+frame: the distance to the nearest obstacle in each of eight azimuth sectors and
+the height above the ground. The measurement is performed with the same
+functions the perception bridge uses on board --- the same estimate of the
+ground and the same exclusions of the hull of the vehicle --- so that the
+encoder is taught exactly the quantity the reward of the reinforcement stage
+prices (Section~\ref{sec:rl-reward}). The result is written beside each episode.
+
+The overall loss is the sum of the imitation loss and the auxiliary one,
+weighted by a coefficient. Two properties of the protocol must be stated because
+they make sessions with and without the auxiliary term comparable. The first is
+that the losses recorded as training and validation loss remain the imitation
+loss alone, so that two sessions are ranked on the same quantity. The second is
+that the output of the encoder is computed once per batch and handed to the
+network, rather than being recomputed for the auxiliary head: the sparse
+convolution, which is the expensive part of the forward pass, is not performed
+twice.
+
+\subsection{Optimisation and Checkpoint Selection}
+\label{sec:sl-optimisation}
+
+The optimiser is AdamW, with a weight penalty sized as a regulariser rather than
+as a constraint. The learning rate decays linearly towards a fraction of its
+initial value rather than towards zero, so that the last epochs keep learning
+instead of merely not getting worse; the gradient norm is clipped at every step.
+
+The horizon of the decay requires knowing the number of steps per epoch, which a
+streaming loader does not declare: it is supplied as an initial estimate and
+measured for real on the first pass, after which the schedule is retargeted onto
+the observed value.
+
+\textbf{No automatic early stopping is provided.} Every epoch produces a
+checkpoint, and the epoch that minimises the validation loss is flagged:
+selecting the checkpoint is part of the experimental protocol
+(Section~\ref{sec:exp-protocol}) and not a decision taken by the training. The
+choice is deliberate --- stopping automatically would mean fixing the criterion
+once and for all, whereas the criterion is what Chapter~\ref{ch:results} must be
+able to discuss. A checkpoint may accordingly be reloaded in two ways: with its
+weights alone, which is what starting a new session from them requires and is
+the case of the reinforcement stage, or in full, which also restores the state
+of the optimiser and the position in the schedule and is what continuing an
+interrupted session requires.
+
+Two seeds govern reproducibility: one initialises the weights and the shuffling,
+the other the data split alone (Section~\ref{sec:sl-split}). A thermal guard,
+finally, suspends training when the temperature of the machine exceeds a
+threshold and resumes it only once it has fallen by a margin, so that a machine
+at the limit does not alternate suspension and resumption at every check.
+
+\subsection{Output Calibration Fitting}
 \label{sec:sl-calibration}
 
-\subsection{Validation on a Synthetic Task}
-\label{sec:sl-validation}
+The recalibration of the output, motivated in
+Section~\ref{sec:output-calibration}, is estimated according to a precise
+protocol, which belongs to this chapter while its purpose belongs to the
+previous one.
 
-\subsection{Training on the Recorded Corpus}
-\label{sec:sl-training}
+Validation is run with the calibration stage at the identity, and the
+calibration is estimated \emph{from those same predictions}, afterwards. The
+ordering is not arbitrary: a model is already calibrated with respect to the
+data on which it was optimised, so that an estimate made on the training set
+would read a gain close to one and would under-correct everywhere else.
 
-\subsection{Results}
-\label{sec:sl-results}
+The estimate is repeated at every epoch, so that each checkpoint carries the
+calibration belonging to its own weights. A gain exceeding a declared maximum is
+clipped and reported: if the spread of the prediction is a small fraction of
+that of the command, the least-squares line is extrapolating.
 
-
-\section{Reinforcement Learning}
+\section{Reinforcement Stage}
 \label{sec:training-rl}
 
-\subsection{Overview}
-\label{sec:rl-overview}
+\subsection{Problem Formulation}
+\label{sec:rl-pomdp}
 
-\subsection{Recurrent PPO and GAE}
+The task is formulated as a partially observable Markov decision process, and it
+is worth identifying its components on the concrete problem rather than in the
+abstract.
+
+The \emph{state} comprises the configuration of the vehicle --- pose, velocity,
+attitude --- and that of the environment surrounding it; the agent never has
+access to it. What it receives is the \emph{observation} defined in
+Section~\ref{sec:observation-space}, produced by the same pipeline that produces
+it on board, and which is a partial and noisy function of that state. The
+\emph{action} is the six-component velocity command, continuous and expressed in
+the physical units of the platform. The \emph{transition} is determined by the
+dynamics of the simulated vehicle and by the latency of the chain that produces
+the observation: between the measurement on which the agent decides and the
+effect of the command lies the traversal time of the pipeline, which is part of
+the problem rather than a defect to be compensated for. The \emph{reward} is
+discussed in Section~\ref{sec:rl-reward}, the episode horizon in
+Section~\ref{sec:rl-episodes} and the discount factor in
+Section~\ref{sec:rl-presets}.
+
+\paragraph{What the partial observability consists of.}
+It is not a formality: on this problem it has three distinct origins, and all
+three have consequences for the learnt behaviour. The local map represents what
+the sensors have observed and not yet forgotten
+(Section~\ref{sec:observation-map}), so that a region never framed is
+indistinguishable from a free one. The pose is an estimate subject to drift
+rather than the true position, and the goal is expressed relative to it. A single
+frame, finally, says nothing about what was happening: whether the vehicle was
+accelerating, whether the obstacle ahead is approaching or receding, how long it
+has been standing still.
+
+\paragraph{The policy is a function of the history.}
+It follows that the optimal policy is a function not of the last observation but
+of the sequence preceding it. The two customary treatments are to stack a window
+of observations into a single vector, or to maintain a state updated at every
+step; the architecture of Chapter~\ref{ch:lnn} adopts the second, so that the
+policy is $\pi_\theta(a_t \mid o_t, x_t)$, with $x_t$ the recurrent state
+summarising the history. It is this choice that makes a recurrent version of the
+algorithm necessary, and Section~\ref{sec:rl-buffer} describes its consequences.
+
+\paragraph{The steps are not equally spaced in time.}
+The formulation assumes that a step is a decision, but the duration of a step is
+not constant: it depends on the rate at which the pipeline delivers the
+observation (Section~\ref{sec:observation-recording}). The interval actually
+elapsed is therefore part of what the policy reads, and it is the quantity with
+which the cell integrates its own dynamics (Section~\ref{sec:cell-time}). The
+same quantity is used by the environment to size the episode, which is defined
+in steps but measured over a time (Section~\ref{sec:rl-episodes}).
+
+\paragraph{The platform is not part of the hidden state.}
+A last property distinguishes this formulation from the customary one of a
+learnt navigation task, and it is the reason why a single policy can be trained
+on a heterogeneous fleet. The identity of the body is not a latent variable the
+agent must infer from the behaviour of the vehicle: it is declared in the
+observation, in the kinematic limits and in the model identifier of
+Section~\ref{sec:observation-vector}. Changing platform is therefore a change of
+observation and not of problem --- the action space, the reward function and the
+objective remain the same --- and it is what allows the experience of different
+robots to be gathered into a single training.
+
+\paragraph{The objective.}
+The policy maximises the expected discounted return over the episodes generated
+by the fleet. During training it is stochastic, since exploration is obtained by
+sampling from a distribution whose width is itself trained
+(Section~\ref{sec:rl-actions}); that width, however, belongs to the algorithm
+and not to the network, so that the policy transferred on board is the mean of
+that distribution, that is deterministic.
+
+\subsection{Recurrent PPO: Objective and Clipping}
 \label{sec:rppo-gae}
 
-\subsection{Environment and Episode Policy}
+Policy-gradient methods improve the policy by raising the probability of the
+actions that turned out better than expected. In the naive form this is valid
+only for the data collected by the current policy: every batch can be used
+exactly once, and a step too large destroys the policy without there being a
+loss function to fall back on.
+
+Proximal policy optimisation \cite{schulman2017ppo} buys reuse and safety by
+keeping the updated policy \emph{close} to the one that collected the data.
+Closeness is measured by the probability ratio of the action actually taken,
+\begin{equation}
+  r_t(\theta) = \frac{\pi_\theta(a_t \mid s_t)}{\pi_{\theta_{\text{old}}}(a_t \mid s_t)},
+  \label{eq:ppo-ratio}
+\end{equation}
+and the objective is clipped so that drifting beyond a threshold ceases to be
+profitable:
+\begin{equation}
+  L_{\text{policy}} = -\,\mathbb{E}\!\left[\min\!\left(r_t A_t,\;
+     \operatorname{clip}(r_t, 1-\epsilon, 1+\epsilon)\, A_t\right)\right].
+  \label{eq:ppo-clip}
+\end{equation}
+
+Equation~\eqref{eq:ppo-clip} reads as a hinge. If an action turned out better
+than expected, raising its probability improves the objective until the ratio
+reaches $1+\epsilon$, beyond which the clipped branch takes over and the
+gradient vanishes: the update stops of its own accord. Symmetrically for an
+action worse than expected.
+
+An entropy bonus is subtracted from the objective, preventing the policy from
+collapsing prematurely onto a single action. The critic is trained by regression
+onto the returns, with the option of clipping its update as well with respect to
+the value predicted during collection, so that a single mini-batch does not
+rewrite the value function. Actor and critic have separate optimisers and
+separate backward passes, and each receives its own clipping of the gradient
+norm.
+
+\subsection{Generalised Advantage Estimation and Truncation Bootstrapping}
+\label{sec:rl-gae}
+
+The advantage $A_t$ could be estimated as the difference between return and
+value, but the return is a sum of many noisy rewards, while the one-step
+estimate is biased by the critic's error. Generalised advantage estimation
+\cite{schulman2016gae} interpolates between the two:
+\begin{align}
+  \delta_t &= r_t + \gamma\, V(s_{t+1})\,(1 - d_t) - V(s_t), \\
+  A_t      &= \delta_t + \gamma\,\lambda\,(1 - d_t)\, A_{t+1},
+  \label{eq:gae}
+\end{align}
+computed backwards over the rollout, where $d_t$ marks the end of an episode and
+the factor $(1-d_t)$ prevents the trace from crossing its boundary.
+
+\paragraph{Truncation and termination are not the same thing.}
+An episode that has reached the time limit is not finished: the state in which
+it stopped has a value, and treating it as zero introduces a systematic bias in
+the critic precisely where episodes almost always end. The reward of a truncated
+step therefore receives, during collection, the addition of $\gamma\,V$ computed
+on the final observation --- which at that moment still exists, whereas the
+automatic reset has already replaced it in the one returned. The advantage
+estimate then uses the end-of-episode signal for both cases and does not repeat
+the addition, which would count the value twice. An environment that truncates
+without providing the final observation raises an error rather than silently
+reintroducing the bias.
+
+\subsection{Recurrent Rollout Buffer and Sequence Replay}
+\label{sec:rl-buffer}
+
+That the network carries memory between observations --- which is the reason it
+was chosen --- has consequences for the organisation of the collected data and
+for the update, and it is what distinguishes this realisation from a stateless
+implementation.
+
+\paragraph{The unit of a mini-batch is a sequence, not a sample.}
+A mini-batch counts sequences of consecutive steps of a single environment; only
+the stateless path shuffles individual samples. The buffer stores, for every
+step and besides the transition, the snapshot of the recurrent state taken
+\emph{before} the forward pass, since it is the state that produced that action.
+
+\paragraph{Backpropagation is truncated at the window.}
+The update replays every sequence forwards, one step at a time, feeding the
+network its own output state as the next input: the gradient flows through the
+length of the window and no further. The initial condition is the snapshot
+stored at the start of the window.
+
+\paragraph{The stored action is the sampled one.}
+The environment clips the command within the limits declared by the platform
+before applying it, but the buffer keeps the action as the policy sampled it.
+The stored log-probability must remain that of \emph{that} action, or the ratio
+of Equation~\eqref{eq:ppo-ratio} would be a ratio between two different
+quantities.
+
+\paragraph{What is not real must not contribute.}
+The last window of a rollout is usually shorter than the nominal length, and
+every loss is therefore masked and divided by the number of real positions
+rather than by the size of the tensor. Likewise, an episode boundary inside a
+window clears the state of the columns that ended and of those alone, so that
+the memory of one episode does not leak into the next. The batch, finally, is
+never split across environments: the cells hold every environment's state
+together, and splitting it would fragment that state.
+
+\subsection{Actor, Critic and Shared Encoder}
+\label{sec:rl-networks}
+
+The actor is one of the networks of Chapter~\ref{ch:lnn}, built from the same
+table the supervised training uses: there is no separate actor hierarchy, since
+the base class of the networks already provides the handling of the recurrent
+state on which the algorithm relies.
+
+The critic is instead a network of its own and deliberately distinct from the
+actor. On an environment that includes the point cloud it also receives the
+descriptor of the encoder, concatenated with the dense observation: a value
+function that cannot see the obstacles is estimating a different problem from
+the one the policy is solving.
+
+One point deserves attention because violating it produces numbers rather than
+errors. The critic reads the observation \emph{through the actor's
+normalisation} --- a view onto the latter's statistics, neither a second
+normaliser nor a copy of those statistics. With a pretrained network, which
+carries its own normalisation inside the weights
+(Section~\ref{sec:rl-finetuning}), a critic reading the raw vector would receive
+quantities orders of magnitude out of scale --- among them the model identifier
+--- and would saturate at the first nonlinearity, reducing itself to predicting
+a constant. The view is not registered as a submodule, so that the statistics
+exist once only and a later load onto the actor cannot leave the two in
+disagreement, and it takes the leading components of the observation, since the
+fixed-step variants append the elapsed interval to it
+(Section~\ref{sec:cell-time}).
+
+\paragraph{The encoder: frozen or trained.}
+The sparse encoder may be kept fixed or refined along with the rest. Freezing it
+allows the descriptor rather than the cloud to be stored in the buffer, and the
+convolution not to be run during the update. Training it costs an additional
+convolution over every sample of every epoch, and the memory to hold its graph,
+which is proportional to the product of sequence length and batch size and to
+the volume of the grid rather than to the number of occupied voxels.
+
+The choice is not free in one case, however: starting from random weights, a
+frozen encoder produces nearly identical descriptors for any cloud, so that the
+policy would fly on odometry alone and no amount of steps would correct it.
+Starting from scratch and training the encoder are therefore a single choice,
+and their contrary combination is refused rather than executed.
+
+\subsection{Action Distribution and Bound Penalty}
+\label{sec:rl-actions}
+
+The action space is continuous and the policy is Gaussian: the network produces
+the mean, while the spread is a trained parameter that lives on the \emph{agent}
+and not on the network. The placement is motivated: without it there would be no
+sampling, no log-probability, no ratio and no entropy --- it is part of the
+algorithm and not of the architecture, and a network exported to the robot need
+not carry it.
+
+The spread is initialised at a fraction of the action envelope declared by the
+environment, and not at a fixed value: a unit standard deviation would be wider
+than the entire action space on a platform with tight limits, and on a
+pretrained network it would drown the imitated policy from the first step.
+
+A penalty term finally charges the part of the Gaussian mean that falls outside
+the envelope. Without it the network may push the mean arbitrarily beyond the
+limit, since the environment clips the command in any case: the policy would pay
+in entropy and in exploration for a region of the action space it cannot reach.
+
+\subsection{Vectorised Fleet Environment and Domain Randomisation}
 \label{sec:rl-environment}
+
+The environment is not a simulator but a \emph{fleet} of isolated copies of the
+entire system. Each parallel environment --- a \emph{slice} --- is a complete
+vertical stack: the simulator with its own world, the bridge towards the ROS
+channels, and a reduced version of the pipeline of
+Chapter~\ref{ch:pipeline}. Isolation between slices is obtained on three
+distinct planes --- middleware domain, simulator partition, communication port
+--- and the training attaches to them through one socket per slice. A property
+important to the interpretation of the results follows: the observation on which
+the policy is refined is produced by the same chain that produces it on board,
+and not by a simplified model of the environment.
+
+The fleet is moreover the way domain randomisation reaches this network. What
+must necessarily agree across slices is whatever sizes the actor and the buffer:
+the width of the dense observation, the presence of the cloud, the width of the
+action, and the names of the signals the reward is built from. What must
+\emph{not} agree is everything else --- the extent and the resolution of the
+grid, the robot model, the goal, the kinematic limits --- and it is precisely of
+those differences that the randomisation consists. The circumstance is so
+structural that the voxel pitch is one of the components of the dense
+observation (Section~\ref{sec:observation-vector}): the network is not required
+to infer the resolution it is looking at, it is told.
+
+The effective heterogeneity is, however, a property of the fleet manifest and
+not of the code: slices are assigned cyclically to the available configurations,
+and a manifest built from a single configuration produces identical slices
+without anything downstream complaining. It is a condition the experimental
+protocol must verify before a long session rather than infer afterwards.
+
+\subsection{Episode Policy: Spawn, Termination and Truncation}
+\label{sec:rl-episodes}
+
+What an episode on a slice is, is decided by the environment and not by the
+training, and it is entirely \emph{derived from what that slice declares}: the
+maximum number of steps from the ratio between the distance of the goal and the
+envelope speed, multiplied by a budget factor; the arrival tolerance as a
+multiple of the voxel pitch of that slice, so that the threshold remains
+commensurate with the resolution at which that slice measures; the tipping angle
+as pure geometry; the seed from the slice's own episode counter.
+
+\paragraph{The budget factor is a demand on speed.}
+Since the maximum number of steps is sized on the envelope speed, allowing a
+multiple of the ideal time is the same as demanding an average speed equal to
+the envelope divided by that multiple. It is a claim about the policy and not
+about the world, and it is to be checked against the speed the policy actually
+holds: a budget the demonstrator itself would not meet cannot be met by a policy
+refined from it, and it makes arrival structurally unreachable.
+
+\paragraph{Every episode restarts from the spawn.}
+An episode resuming half way along the route would be a shorter task scored on
+the same scale, and the return would report an improvement where the vehicle had
+merely been asked to do less. Restarting from the origin moreover preserves the
+meaning of the deadline, which measures the trip from the start, and prevents a
+robot stuck against an obstacle from being truncated in place indefinitely,
+which would make the distribution of the initial states a function of the
+policy's own failures.
+
+\paragraph{The starting position may be randomised.}
+This is a distinct question from the previous one: every episode starts from a
+point drawn uniformly within a disc around the configured position of the slice,
+with an analogous perturbation of the heading. Since the goal is anchored to the
+start, it moves with it: the trip keeps its length and its relative bearing, and
+crosses a different part of the environment. The two consequences are both the
+point --- the maximum number of steps stays exact, and what changes is the
+scene, which is what the encoder needs in order not to memorise one corridor.
+The draw is reproducible, being governed by a generator built from the seed of
+the session, the index of the slice and the number of the episode.
+
+\paragraph{The terminal conditions.}
+An episode ends on arrival within the tolerance, on tipping beyond the declared
+angle, on contact when a collision margin is armed, or on stalling. The last
+condition deserves a motivation, because it is not a geometric threshold: the
+distance from obstacles is measured from the centre of the vehicle, and is
+therefore in fact a threshold on the sphere enclosing its body --- an acceptable
+model for a multirotor and an inadequate one for an elongated ground vehicle,
+whose sphere is inside a wall whenever it merely drives past one. The
+consequence of contact, however, requires no geometry: a robot commanded forward
+that does not move forward has hit something. Stalling ends the episode after a
+number of consecutive steps below a fraction of the commanded speed, and only
+when the command exceeds a minimum threshold --- standing still is a legitimate
+thing to be told to do. It is armed per slice and only where it separates the
+two cases, that is on the platforms that do not fly.
+
+Reaching the step limit finally produces a \emph{truncation}, which the
+algorithm treats differently from a termination (Section~\ref{sec:rl-gae}).
 
 \subsection{Reward Design}
 \label{sec:rl-reward}
 
+The reward is not fixed: it is a policy chosen among several, and its structure
+is a list of cost terms plus a single term that earns. Every term knows its own
+name, its share of the budget and its own arithmetic, and is logged separately,
+so that the contribution of each is readable.
+
+\paragraph{The term that earns.}
+Progress towards the goal is formulated as potential-based shaping
+\cite{ng1999policy}, with potential equal to the negative of the distance to the
+goal. The canonical form, $d_{\text{prev}} - \gamma d$, is invariant with
+respect to the optimal policy, but it pays $(1-\gamma)d$ to a stationary vehicle
+--- \emph{the more so the further away it is}. If the discount factor is derived
+from the episode length, as described in Section~\ref{sec:rl-presets}, that rate
+works out at exactly the ceiling below which the dense costs must be held: no
+allocation of the shares can then make loitering unprofitable, since the matter
+is excluded by construction and not by tuning. The policy adopted therefore pins
+at one the discount of the shaping term alone, which thus pays the metres
+actually closed. What is given up is exact invariance under a discounted return;
+what is obtained is that same invariant form minus a cost proportional to the
+distance still to go --- loitering far costs more than loitering close, which is
+a term one would write on purpose.
+
+\paragraph{The barriers.}
+Three of the ways the vehicle is lost --- contact, tipping over, leaving the
+altitude band --- have the same shape: a quantity approaching a threshold past
+which the episode ends. They therefore share a single term, quadratic, null up
+to a soft threshold and clipped at one beyond the hard one. Each of the three
+choices answers a failure of the obvious alternative. Without the soft threshold
+the cost would jump from nothing to the terminal penalty, leaving no gradient
+along which to learn not to arrive there. A linear ramp would tax the useful
+manoeuvre as much as the dangerous one --- a multirotor tilts in order to
+accelerate and passes close to a wall in order to get past it --- whereas the
+quadratic leaves the useful zone almost free. And an unbounded barrier would
+dominate every other term as soon as the violation is large, and would have no
+finite worst case, so that neither of the two budget constraints below could be
+verified at all.
+
+The safety barrier, in particular, is measured not against a constant distance
+but against the room needed to stop,
+\begin{equation}
+  d_{\text{safe}}(v) = d_0 + \tau v + \frac{v^2}{2 a_{\text{brake}}},
+  \label{eq:stopping}
+\end{equation}
+where $d_0$ is the radius of the sphere enclosing the vehicle plus a standoff,
+and $\tau$ is the latency of perception and actuation. The altitude barrier is
+defined around a cruise altitude and expressed as a fraction of it, so that it
+follows the vehicle rather than the map, and it leaves out of the term the
+slices to which no vertical velocity is sent.
+
+\paragraph{The terminals, and the scale of everything else.}
+A terminal term assigns the arrival bonus --- reduced in proportion to the speed
+at which the goal is reached, since arriving into the goal is not arriving ---
+and the penalty for losing the vehicle. Every other magnitude is expressed as a
+fraction of what the slice declares: the maximum progress for the costs, the
+terminal angle for the attitude ramp, the action envelope for the command
+smoothness term, the map radius for the altitude band. A faster robot, a
+different step or another simulator move all of them without anyone having to
+remember to.
+
+\paragraph{The two budget constraints.}
+The shares must satisfy two inequalities. Per step, their sum must be below one:
+above that, the best available policy is to stop paying, by standing still or by
+ending the episode at once. Per episode, the sum must be below the reciprocal of
+the budget factor, since a slow success over $k$ times the ideal time pays $k$
+times the costs while earning the same distance; requiring the inequality to
+hold for any distance yields $\sum f < 1/k$. It is a design rule rather than a
+number to be retuned for every goal, and it is verified at the construction of
+the policy and at the connection to the fleet, where the length of the episodes
+is known.
+
+\paragraph{The budget is necessary and not sufficient.}
+Satisfying it guarantees that no allocation of the shares pays for ending an
+episode early. It says nothing about how much the terms, \emph{together}, pay
+for flying rather than for standing still, and a configuration may respect the
+ceiling and converge to immobility all the same, because what the constraint
+cannot see is the relative magnitude between the channels. A reward
+configuration is therefore \emph{priced before} the session, at the operating
+points at which the fleet has been measured, answering the two questions that
+decide a session before it begins: whether flying pays better than creeping, and
+above what probability of arriving trying pays better than not trying.
+
+\subsection{Observation and Reward Normalisers}
+\label{sec:rl-normalisers}
+
+The agent has three optional normalisers --- of the observation, of the reward
+and of the returns --- and a fourth constraint which is not optional and has no
+switch, namely that the critic read the observation through whatever reads it
+for the actor (Section~\ref{sec:rl-networks}).
+
+The observation normaliser \emph{must stay off} with a pretrained network, which
+carries its own normalisation inside the weights: a second normalisation on top
+would feed it an input it has never seen. The combination is refused rather than
+executed. The reward normaliser divides by the running standard deviation of the
+discounted return and does \emph{not} subtract its mean, since subtracting it
+would change the sign of the reward.
+
+Two properties of the recursive estimation of the statistics deserve to be
+stated, because both arise from characteristics of this observation. The first
+is that the estimate accumulates the sum of squared deviations and not the
+variance: the two coincide only as long as every column varies, whereas in this
+observation a substantial part of the columns is constant by construction ---
+the goal block, the declared envelope of the robot, the model identifier --- and
+carrying a variance would mean treating as a measurement the value of
+convenience assigned to a constant column, then diluting it at every batch. The
+second is that every sample is bounded to a number of deviations before being
+folded in: there being no forgetting factor, a single reading coming from a
+diverged estimator would become, for good, the scale by which everything else is
+divided.
+
+\subsection{Trust Region, Entropy and Schedules}
+\label{sec:rl-schedules}
+
+After every mini-batch the approximate divergence between the policy that
+collected the data and the current one is measured, with the low-variance
+estimator $\mathbb{E}[(r-1) - \log r]$. When the running mean of the epoch
+exceeds a threshold, the actor stops for the rest of the update: the data no
+longer describe the current policy, and the following epochs would optimise with
+respect to a distribution that has moved. The critic continues, having no ratio
+and nothing to be wrong about.
+
+\paragraph{The mean, and not the sample that produced it.}
+The criterion is read on the mean and not on the individual mini-batch, and this
+is a substantive choice. A mini-batch is here the product of sequence length and
+batch size, and on so few samples the estimator is heavy-tailed: stopping at the
+first sample beyond the threshold means stopping at the maximum of many noisy
+draws, which exceeds any threshold close to the mean. The region is therefore
+not consulted until a minimum number of informative estimates is available,
+since the standard error falls as the square root of their number. Moreover,
+only the mini-batches scored \emph{after} the policy has moved enter that mean:
+until the first optimiser step the weights are still the ones that collected the
+rollout, the ratio is exactly one and the estimate exactly zero, and including
+them would lower the mean by an amount that depends on the size of the gradient
+buffer rather than on the policy.
+
+\paragraph{The schedules.}
+The learning rate and the clipping width $\epsilon$ both decay linearly towards
+a fraction of their initial value rather than towards zero: early on, large and
+exploratory steps are wanted; late on, a policy that settles. The horizon of the
+decay is derived from the step budget, so that raising it does not merely
+lengthen the session but also re-paces its schedule.
+
+\paragraph{One knob wearing four names.}
+The initial exploration width, the actor's learning rate, the trust-region
+threshold and the number of mini-batches accumulated per step are not
+independent parameters. The divergence grows as $\Delta\mu^2/2\sigma^2$ and the
+gradient on the mean as $A(a-\mu)/\sigma^2$: the trust region is therefore
+\emph{measured in units of the exploration width}, and narrowing the latter
+makes the same policy step far larger in the eyes of the stopping criterion.
+They must therefore be tuned together, which is why they are the only parameters
+of the algorithm the command line exposes beside those of the environment.
+
 \subsection{Fine-Tuning from Imitated Weights}
 \label{sec:rl-finetuning}
 
-\subsection{Validation on LunarLander}
-\label{sec:rl-validation}
+Loading an imitation checkpoint rebuilds the network from the declaration held
+in the metadata, by the same route the inference node takes on board: training
+and inference load the same file in the same way. Three adjustments are applied
+on the way in, and each of them guards against a failure that would produce
+numbers rather than an exception.
 
-\subsection{Training on the Fleet}
-\label{sec:rl-training}
+\begin{enumerate}
+  \item \textbf{The external normalisation stays off}, for the reason given in
+        Section~\ref{sec:rl-normalisers}.
+  \item \textbf{Degenerate statistics are repaired}, as in
+        Section~\ref{sec:sl-normaliser}. The repair is neutral on constant data,
+        and fine-tuning is precisely what makes those features start to vary.
+  \item \textbf{The output calibration becomes trainable.} Kept fixed, a
+        component the demonstration never exercised has zero correlation, hence
+        zero gain: under fine-tuning that factor multiplies the gradient too, so
+        that the component is not attenuated but \emph{disconnected} --- and
+        those are exactly the components pretraining got wrong. The trainable
+        mode starts from the estimated values and lets them move.
+\end{enumerate}
 
-\subsection{Results}
-\label{sec:rl-results}
+\paragraph{The first iterations.}
+A pretrained actor arrives with a policy worth keeping and a critic that knows
+nothing. The first advantages are therefore the critic's error, and the
+algorithm would spend the first iterations moving good weights with them --- the
+encoder included, where it is trainable. A configurable number of initial
+iterations is therefore reserved for the critic alone: while it lasts, the
+actor's weights, its exploration width and the auxiliary head remain unchanged
+bit for bit. The phase has moreover an experimental value of its own, and it is
+stated here because Chapter~\ref{ch:results} relies on it: for its whole
+duration the performance metrics describe the imitated policy exactly as
+imitation left it, and constitute therefore its only free measurement on the
+fleet.
+
+\paragraph{Starting over or continuing.}
+Starting from the weights alone begins a new session, with critic, optimisers
+and exploration width afresh; continuing an interrupted one also restores them,
+together with the statistics of the normalisers and the position in the
+schedule, each of which would otherwise make the resumption read as a regression
+that did not occur.
+
+\paragraph{What can be transferred on board.}
+A policy refined from imitation carries the statistics of the corpus inside its
+own weights and is transferable as it stands. A policy trained from random
+weights is not: its internal normalisation is the identity, and the
+normalisation that made the training work lives in the agent's recursive
+estimator, which inference never opens. In the second case the statistics must
+be written into the network before export, an operation the dedicated tool
+performs while refusing the cases in which it would be ambiguous --- a
+checkpoint carrying them in both places, or in neither.
+
+\subsection{Hyperparameter Presets}
+\label{sec:rl-presets}
+
+The hyper-parameters of the algorithm are declared as data, one set per
+architecture, rather than as arguments scattered among the call sites: changing
+architecture is a choice on the command line, changing a value is an edit in a
+single visible place. Each set moreover provides a \emph{substitution} for
+starting from random weights, which alters the few values that regime requires
+to differ --- a higher learning rate and entropy bonus, a wider initial
+exploration, no phase reserved for the critic, there being no policy to protect,
+and the external normalisation of the observation switched on, since in that
+regime the network carries none of its own inside. It is the same difference
+that Section~\ref{sec:rl-finetuning} states with respect to transfer on board.
+The command line reaches only the parameters on which a fleet is genuinely
+retuned, and every value differing from the default set is printed at startup,
+so that the session itself declares what it was started with.
+
+\paragraph{One discount per slice.}
+The discount factor deserves separate treatment, because a heterogeneous fleet
+admits no single one. Resolving it as $\gamma = 1 - 1/T$ from the episode length
+$T$ of each slice makes $\gamma^{T}$ equal to $1/e$ on all of them: the arrival
+bonus is equally visible from every spawn. A single value derived from the mean
+would instead give slices with very different trips very different horizons,
+posing in effect the same task as two distinct problems, and making the bonus
+nearly invisible to the longest slice. The same per-slice value is read by the
+advantage trace, by the value added on truncation, by the reward normaliser and
+by the progress potential, so that nothing is discounted twice with two
+different values.

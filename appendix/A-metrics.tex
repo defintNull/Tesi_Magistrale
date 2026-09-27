@@ -1,0 +1,685 @@
+%!TEX root = ../main.tex
+\chapter{Metric Reference}
+\label{app:metrics}
+
+This appendix defines, column by column, the metrics summarised in
+Chapter~\ref{ch:experiments}. It is meant to be consulted rather than read: each
+entry names the column as it appears in the log file, states what it measures,
+and where the choice is not obvious, why it is computed the way it is.
+
+\section{Supervised Training Metrics}
+\label{app:metrics-supervised}
+
+\subsection{Reference Predictors and Skill Scores}
+\label{sec:metrics-r2}
+
+A loss value on its own has no scale: \num{0.01} may be excellent or useless
+depending on how large the commands are. The trainer therefore evaluates two
+zero-parameter reference predictors on every batch and expresses the model's
+error relative to them.
+
+\paragraph{The zero predictor.}
+\met{baseline_zero_loss} is Equation~\eqref{eq:capscaled} evaluated with
+$\hat{\mathbf{y}} = \mathbf{0}$: the loss of a model that always commands
+``hold still''. A run whose loss sits at or below this line has learnt nothing
+beyond predicting nothing, which is the signature of the most common failure
+mode observed---a loss that drops once in the first epoch and never moves
+again.
+
+The same comparison is made per component, with a plain (unscaled) squared
+error so that the yardstick does not depend on the choice of loss:
+%
+\begin{equation}
+  \text{\met{mse_dim_i}} = \frac{1}{N}\sum_{n}(\hat{y}_{n,i} - y_{n,i})^{2},
+  \qquad
+  \text{\met{baseline_dim_i}} = \frac{1}{N}\sum_{n} y_{n,i}^{2},
+\end{equation}
+%
+and their ratio gives a coefficient of determination against the zero
+predictor,
+%
+\begin{equation}
+  \text{\met{r2_dim_i}} = 1 - \frac{\text{\met{mse_dim_i}}}{\text{\met{baseline_dim_i}}}.
+  \label{eq:r2}
+\end{equation}
+%
+A value of $1$ is a perfect fit, $0$ means the model is no better than
+predicting zero, and a negative value means it is worse. The reason for
+reporting this \emph{per dimension} is that the target energy of this corpus is
+heavily concentrated in a single component of the six
+(Section~\ref{sec:res-sl-corpus}), so an aggregate error that improves says
+almost nothing about the other five; a model can score well overall while having
+learnt only the dominant one.
+
+Two details of the computation matter. The ratio in
+Equation~\eqref{eq:r2} is formed \emph{once per epoch} from the two epoch
+means, not per batch and then averaged, because the pooled $R^2$ is a ratio of
+means and not a mean of ratios. And when \met{baseline_dim_i} is exactly zero
+the split never commands that component; the ratio is undefined, the column is
+omitted rather than filled with an infinity, and the raw \met{mse_dim_i} is
+kept, where it reads as pure error.
+
+\paragraph{The persistence predictor.}
+The observation already contains the robot's current linear and angular
+velocity, which is the same physical quantity as the command one step later
+and strongly correlated with it. Echoing that velocity is therefore a
+zero-parameter rule that is far harder to beat than silence, and a model that
+does not beat it is not worth its parameters. The loader exposes this echo as
+$\mathbf{p}_n$ (masked to zero on the components the robot cannot reach or the
+corpus never commands), and the trainer logs
+%
+\begin{equation}
+  \text{\met{persist_dim_i}} = \frac{1}{N}\sum_{n}(p_{n,i} - y_{n,i})^{2},
+  \qquad
+  \text{\met{skill_dim_i}} = 1 - \frac{\text{\met{mse_dim_i}}}{\text{\met{persist_dim_i}}},
+\end{equation}
+%
+together with \met{persist_loss}, the cap-scaled loss of the echo itself.
+The \emph{skill score} is positive only when the model earns its parameters.
+It is the stricter of the two ratios: a run can show a comfortable
+\met{r2_dim_i} and a negative \met{skill_dim_i} at the same time, which means
+it has learnt to reproduce the current velocity and little else.
+
+\subsection{Amplitude and Restart Ratio}
+\label{sec:metrics-amplitude}
+
+A squared error cannot see one failure that matters a great deal for a
+deployed controller. A model trained by least squares regresses towards the
+conditional mean of the demonstration: where the pilot sometimes commanded a
+strong manoeuvre and sometimes none, the model learns to command a weak one
+every time. This is not a bug of the optimiser---it is what minimising
+squared error does under uncertainty---but a robot flown by such a model is
+sluggish, and the squared error \emph{rewards} the behaviour rather than
+exposing it. Two metrics exist to expose it.
+
+\paragraph{Amplitude ratio.}
+The trainer logs the first and second moments of both prediction and target
+per component (\met{sq_pred_dim_i} $= \mathbb{E}[\hat{y}_i^{2}]$,
+\met{mean_pred_dim_i} $= \mathbb{E}[\hat{y}_i]$ and
+\met{mean_true_dim_i} $= \mathbb{E}[y_i]$; the second moment of the target is
+\met{baseline_dim_i}) and forms, once per epoch,
+%
+\begin{equation}
+  \text{\met{amplitude_dim_i}}
+  = \sqrt{\frac{\operatorname{Var}(\hat{y}_i)}{\operatorname{Var}(y_i)}}
+  = \sqrt{\frac{\mathbb{E}[\hat{y}_i^{2}] - \mathbb{E}[\hat{y}_i]^{2}}
+               {\mathbb{E}[y_i^{2}] - \mathbb{E}[y_i]^{2}}}.
+\end{equation}
+%
+A value of one means the model reproduces the spread of the demonstrated
+commands; a value well below one means it returns something closer to their
+average than to any of them. The variance rather than the raw second moment
+is used because on a component with a large mean the second moment is
+dominated by that mean, and the spread---which is what collapses when a head
+averages two modes---barely moves it.
+
+\paragraph{Restart ratio.}
+The frames that decide whether a deployed policy ever leaves standstill are
+those in which the robot is at rest and the demonstration starts moving. They
+are a fraction of the corpus small enough to be invisible in any aggregate, so
+they are isolated explicitly. A frame is a \emph{restart frame} when the
+measured velocity is below \SI{0.02}{} on every component and the demonstrated
+command exceeds \SI{0.05}{} on at least one (in each component's own units).
+Over those frames the trainer logs their count, \met{restart_frames}, and
+%
+\begin{gather}
+  \text{\met{restart_pred_dim_i}} = \mathbb{E}\!\left[\hat{y}_i \cdot \operatorname{sign}(y_i)\right],
+  \qquad
+  \text{\met{restart_true_dim_i}} = \mathbb{E}\!\left[\,|y_i|\,\right],
+  \\
+  \text{\met{restart_ratio_dim_i}} = \frac{\text{\met{restart_pred_dim_i}}}{\text{\met{restart_true_dim_i}}}.
+\end{gather}
+%
+The prediction is projected onto the demonstrated direction rather than taken
+in absolute value: an absolute value would count noise around zero as if it
+were a command and read high for a model that never moves. A restart ratio
+near one means the model commands the departure the pilot commanded; near zero
+it means the model would leave the robot sitting at its spawn. As with the
+other ratios, the two halves are logged separately and divided once per epoch.
+
+\subsection{Still and Moving Frames}
+\label{sec:metrics-still}
+
+A substantial share of the samples in the corpus are all-zero commands
+(Section~\ref{sec:res-sl-corpus}). These are legitimate ``hold still'' targets---the pilot waiting, hovering, or
+paused---and not missing labels, but they are also the easiest samples to
+score well on. \met{mse_still} and \met{mse_moving} split the plain squared
+error by whether the target is exactly zero on every component, so that it is
+possible to tell how much of a score comes from recognising a stop and how
+much from reproducing a manoeuvre. A model that scores well overall but poorly
+on \met{mse_moving} is scoring on the stops.
+
+Both columns are emitted for every batch, as \emph{not a number} when the
+batch contains no frame of that kind; the epoch average is then taken only
+over the batches in which the quantity was defined, so that the reported
+value means what its name says.
+
+\subsection{Per-Robot Breakdown}
+\label{sec:metrics-per-robot}
+
+The corpus is recorded on more than one platform, and a drone and a ground
+robot do not use the same command components: vertical velocity is not merely
+rare for a ground robot, it is unreachable. A fleet average can therefore
+hide one robot being served well and another badly. Whenever the batch
+carries robot identifiers, every per-dimension pair is repeated per model as
+\met{mse_m<id>_dim_i} and \met{baseline_m<id>_dim_i}, and the logger derives
+\met{r2_m<id>_dim_i} from them with no further bookkeeping. How many models a
+batch holds follows from how it was filled: the sparse convolution takes one
+grid per call, so a batch is built out of windows that share a grid, and a
+validation batch is one episode and therefore one robot, while a training
+batch may draw from several episodes at once and hold more than one. The
+per-model averages are taken only over the batches in which that model
+appears.
+
+\subsection{Calibrated Metrics}
+\label{sec:metrics-calibrated}
+
+The output calibration of Section~\ref{sec:output-calibration}, fitted
+according to the protocol of Section~\ref{sec:sl-calibration}, corrects the
+regression to the mean before deployment. It is the per-component affine map
+%
+\begin{equation}
+  \tilde{y}_i = g_i\,\hat{y}_i + b_i,
+  \qquad
+  g_i = \frac{\operatorname{Cov}(\hat{y}_i, y_i)}{\operatorname{Var}(\hat{y}_i)},
+  \qquad
+  b_i = \mathbb{E}[y_i] - g_i\,\mathbb{E}[\hat{y}_i],
+\end{equation}
+%
+which is the least-squares regression of the demonstrated command on the
+model's prediction, refitted on the validation split once per epoch. Since the
+policy that flies is the calibrated one, the columns below report what the robot
+would execute rather than what the optimiser sees, and a component on
+which either side carries no signal is left switched off ($g_i = b_i = 0$),
+since a demonstration that never commands it has nothing to fit.
+
+Because the calibrated output is what the robot is actually given, the whole
+family of validation metrics is computed a second time through the fitted
+calibration and logged with the prefix \met{val_cal_}: \met{val_cal_loss},
+\met{val_cal_r2_dim_i}, \met{val_cal_amplitude_dim_i},
+\met{val_cal_restart_ratio_dim_i}, and so on. The uncalibrated
+\met{val_} family describes a model that is never deployed; the
+\met{val_cal_} family describes the one that is.
+
+The calibrated numbers are mildly optimistic, since the correction was fitted
+on the same frames it is scored on. It is two parameters per component
+against a whole split, so the optimism is small, but it is the reason
+\met{val_loss}---fitted to nothing---remains the quantity that ranks
+checkpoints.
+
+\subsection{Auxiliary Geometry}
+\label{sec:metrics-geometry}
+
+The auxiliary head of Section~\ref{sec:geometry-head}, supervised as described
+in Section~\ref{sec:sl-geometry}, contributes its own columns. One property of
+the headline number belongs here: \met{train_loss} and \met{val_loss} remain the
+imitation loss alone, so a run with the head and a run without it are still
+ranked on the same quantity. Whether the head changes the policy is a question
+for Chapter~\ref{ch:results}.
+
+The auxiliary error itself is \met{geometry_loss}, a squared error over the
+entries the cloud could measure, expressed in fractions of the map radius.
+The scaling is what puts frames recorded on grids of different extent on one
+scale, and it is also what makes a sector holding nothing read the same value
+everywhere. An entry the measurement could not fill is left out of the loss
+rather than counted as zero, since zero clearance is not a missing value but a
+collision, and would be learnt as one.
+
+The skill score is formed as the others are, from means logged separately and
+divided once per epoch, and is reported for two groups: $i = 0$ for the sector
+clearances pooled and $i = 1$ for the height. From \met{geometry_mse_dim_i},
+\met{geometry_sq_true_dim_i} and \met{geometry_mean_true_dim_i},
+%
+\begin{equation}
+  \text{\met{geometry_explained_dim_i}}
+  = 1 - \frac{\text{\met{geometry_mse_dim_i}}}
+             {\mathbb{E}[y_i^{2}] - \mathbb{E}[y_i]^{2}},
+\end{equation}
+%
+the fraction of the geometry's spread the head accounts for, where $0$ is a
+head that predicts the average clearance and nothing more. Two choices in that
+denominator are deliberate. It is the spread over the \emph{epoch} and not
+within a batch, because a validation batch is a single episode and one robot's
+height above the ground barely varies inside it, so a per-batch variance would
+divide by almost nothing. And it is the spread rather than the second moment
+used in Equation~\eqref{eq:r2}, because these targets are distances and not
+commands centred on zero: the zero predictor, which is the reference the
+$R^2$ of that equation is built on, is not a meaningful one for them.
+
+\met{grad/geometry_head} is the head's gradient norm, logged beside the
+network's own \met{grad/encoder}. It is separate because the head is trained
+with the network but lives outside it, so it is not one of the sub-modules
+\met{grad/<module>} enumerates.
+
+\subsection{Model Health}
+\label{sec:metrics-health}
+
+The metrics above describe the output. A further group describes whether the
+parts of the network that produce it are doing anything, which no loss curve
+reveals.
+
+\paragraph{Encoder spread.}
+The architectures that consume a point cloud pass it through a sparse
+convolutional encoder that reduces tens of thousands of voxels to a
+200-dimensional descriptor (Section~\ref{sec:sparse-encoder}). \met{encoder/mean} and
+\met{encoder/norm} are the mean value and the mean Euclidean norm of that
+descriptor over the batch, and \met{encoder/std} is its standard deviation
+\emph{across the samples of the batch}, per feature, averaged over features.
+A value near zero means the encoder answers nearly the same vector whatever
+cloud it is shown: the sparse branch is contributing nothing, the policy is
+effectively flying on odometry alone, and the loss curve shows nothing of it.
+
+The across-sample form is the only one that can detect this. The encoder ends
+with a layer normalisation that pins every single descriptor to zero mean and
+unit deviation across its channels, so a spread measured \emph{inside} one
+descriptor reads $1.0$ whatever the input and the check could never fire.
+That same normalisation is why the across-sample value has no absolute scale
+to be read against: the descriptor's own magnitude is fixed, so the column
+answers ``is this encoder answering differently to different clouds'' and not
+``by how much'', and it is read as a comparison---against the checkpoint a run
+started from, or against the same architecture untrained---rather than against
+a threshold. When a batch holds a single sample the column is omitted, because
+$0.0$ would read as the failure rather than as the absence of a measurement.
+
+\paragraph{Hidden-state norms.}
+For every recurrent cell $k$ in the network, \met{state/cell_<k>/mean},
+\met{state/cell_<k>/std} and \met{state/cell_<k>/max} are the mean,
+standard deviation and maximum over the batch of the Euclidean norm of the
+cell's hidden state after the forward pass. They catch the two ways a
+recurrent state goes wrong: growth without bound, and collapse to zero.
+
+\paragraph{Gradient norms.}
+\met{grad/total} is the global $L_2$ norm of the gradient before clipping,
+the most immediate signal that training has stalled, and it is the one extra
+number printed on the console at every epoch. \met{grad/<module>} is the same
+norm restricted to each top-level sub-module of the network (the encoder, the
+input layer, each cell, the output head), which is where a dead branch shows
+up: a module absent from the list received no gradient at all in that batch,
+which is not the same as receiving a small one, and the distinction separates
+an unused branch from a merely quiet one. Gradient norms exist only for the
+training split, since evaluation has no backward pass.
+
+\paragraph{Cost.}
+\met{epoch_time_s} is the wall-clock duration of the epoch, which together
+with the number of parameters and the number of samples gives the throughput
+of each architecture.
+
+
+\section{Reinforcement Learning Metrics}
+\label{app:metrics-rl}
+
+\subsection{Task Performance}
+\label{sec:metrics-rl-task}
+
+\paragraph{Episodic return and length.}
+For every episode that closed during the iteration, the trainer records the
+undiscounted sum of the environment's rewards and the number of steps. They
+are reported as \met{ep_return_mean}, \met{ep_return_std},
+\met{ep_return_min}, \met{ep_return_max}, \met{ep_length_mean} and
+\met{ep_length_std}, together with \met{n_episodes}, the number of episodes
+those statistics average, and \met{episodes_total}, the running count since
+the start of the run. The distinction between the last two matters:
+\met{n_episodes} at zero says that nothing closed \emph{just now}, which is
+normal on a fleet whose episodes last a thousand steps, whereas
+\met{episodes_total} at zero says that nothing has \emph{ever} closed, which
+is a fault. The return is computed from the environment's own reward, before
+the truncation bootstrap described in Section~\ref{sec:rppo-gae} is added:
+that bootstrap is right for the advantage trace and wrong for a reported
+return, which would otherwise move with the critic on every truncated step.
+
+\paragraph{Success rate and end reasons.}
+The return alone cannot tell an episode that arrived from one that crashed.
+Every episode ends for a named reason, and the trainer reports the fraction
+of the iteration's closed episodes that ended for each as \met{term/<reason>}.
+On the fleet the reasons are \texttt{goal} (arrived within tolerance),
+\texttt{collision}, \texttt{flipped} (attitude beyond the terminal angle),
+\met{out_of_band} (left the altitude envelope), \met{stalled} (commanded to
+move and did not, for a run of consecutive steps), \met{sensor_lost} (the
+lidar returned nothing for two consecutive steps) and \met{max_steps}
+(the time budget expired). \met{success_rate} is the share of the first.
+\met{stalled} reaches a collision through its consequence rather than through
+a clearance, and it is armed only on the slices that do not fly, where an
+impact does not announce itself by tipping the vehicle over; on a fleet of
+flying slices the column simply never appears.
+The set of columns is counted rather than declared: whatever the environment
+names becomes a column, so a fleet that adds a terminal condition gets a
+column without the trainer changing. A blank cell therefore means ``did not
+occur'' when episodes closed and ``not measured'' when none did, and the
+plotting code reads the shares against \met{n_episodes} for that reason.
+
+Why this is the primary metric, and not the return, follows from the structure
+of the reward: with a dense progress term and a fixed crash penalty, ``get
+closer, then crash'' scores better than ``crash early'' and keeps improving for
+as long as the agent gets further, so the return can rise for a whole run while
+the task is never solved. A run of this work in which exactly that happened is
+reported in Section~\ref{sec:res-rl-fleet}.
+
+\paragraph{Progress closed per episode.}
+\met{ep_progress_mean} and \met{ep_progress_std} are the metres closed
+between an episode's first observation and its last, measured as the
+difference in distance to the goal. The column exists because the return can
+disagree with it, and when they disagree it is the return that misleads. The
+progress term of the reward is a potential-based shaping
+\cite{ng1999policy} whose discounted sum over an episode telescopes to
+$d(s_0) - \gamma^{T} d(s_T)$; the second half does not vanish at a terminal,
+so an episode that ends far from the goal still collects
+$d(s_0)\,(1 - \gamma^{T})$, which on a long slice is a sizeable fraction of the
+arrival bonus itself. A run whose episodes all truncate therefore shows a
+comfortably positive return while nothing has been achieved, and
+Section~\ref{sec:res-rl-fleet} reports one in which this column fell towards
+zero while the return improved throughout. It is absent, rather than zero, on an
+environment that reports no distance.
+
+\paragraph{Episodes in flight.}
+Three columns describe the episodes that are \emph{still running} at the end
+of the rollout: \met{inflight_steps}, the age of the oldest open episode;
+\met{inflight_budget}, the mean step budget of the open episodes as the
+environment sized them; and \met{inflight_d_goal}, their mean current distance
+to the goal. Without them a run in which nothing has finished yet reports
+\emph{not a number} for every episodic column and nothing else, and a long
+episode cannot be told from one that can never end. \met{inflight_budget} is a
+mean over the open episodes, so a fleet whose budgets are fixed reports one
+value for the whole run however different its slices are: it says how long an
+episode is allowed to be, and nothing about how varied the fleet is.
+
+\subsection{Policy Optimisation Diagnostics}
+\label{sec:metrics-rl-policy}
+
+PPO improves the policy by maximising a clipped surrogate objective over
+several passes on the same rollout. The quantities below are computed on every
+mini-batch of the update and averaged over the iteration, except where
+stated; in the recurrent case only the real, non-padded positions of a
+sequence contribute.
+
+\paragraph{Losses.}
+\met{pg_loss} is the clipped policy-gradient surrogate,
+$-\mathbb{E}[\min(r_t A_t,\ \operatorname{clip}(r_t, 1-\epsilon, 1+\epsilon)\,A_t)]$
+with $r_t = \pi_\theta(a_t \mid s_t)/\pi_{\theta_{\text{old}}}(a_t \mid s_t)$
+the probability ratio, where the advantages are normalised to zero mean and
+unit variance within each mini-batch so that the step size does not depend on
+the reward's scale. \met{entropy} is the mean entropy of the action
+distribution, and \met{actor_loss} is the total actor objective,
+$\text{\met{pg_loss}} - c_{\text{ent}}\cdot\text{\met{entropy}}$.
+
+\paragraph{Approximate KL divergence and the trust region.}
+\met{approx_kl} is the estimated Kullback--Leibler divergence between the
+policy that collected the rollout and the one being updated, using the
+low-variance estimator $\mathbb{E}[(r_t - 1) - \log r_t]$. It is the
+quantity that decides when the update stops: after every mini-batch the
+running mean of the estimate over the current epoch is compared to
+\met{target_kl}, and when it exceeds the threshold the actor stops for the
+rest of the update, since the data no longer describes the current policy.
+\met{kl_early_stop} records whether that happened (0 or 1) and
+\met{epochs_run} how many of the \met{n_epochs} passes the actor completed.
+Zero there is ambiguous on its own and is read beside \met{critic_warmup}
+below, which is the other way an iteration can run no actor epoch at all.
+The critic keeps fitting either way, as it has no ratio and nothing to be
+wrong about.
+
+The estimator is heavy-tailed on the small mini-batches a recurrent update
+uses---sixteen samples on the fleet's preset---so a single sample above the
+threshold is more often an outlier than a movement. The stop therefore acts
+on the epoch's running mean, read only once it has at least eight informative
+estimates, and only mini-batches scored \emph{after} the first optimiser step
+count as informative (before it, the ratio is exactly one and the estimate
+exactly zero). \met{approx_kl_max} is the largest per-mini-batch estimate of
+the iteration, the one series a mean would destroy. It is read beside
+\met{approx_kl}: close together, the policy genuinely steps that far and the
+levers are \met{target_kl} or the learning rate; far apart, the estimator is
+noisy and the mini-batch is too small.
+
+\paragraph{Clip fraction.}
+\met{clip_frac} is the fraction of samples whose ratio left the interval
+$[1-\epsilon, 1+\epsilon]$, i.e.\ the share of the batch that hit the hinge of
+the surrogate. Near zero the policy is barely moving---steps too small, or
+advantages near zero; very high, it is being pushed hard against the hinge on
+every batch. \met{clip_eps} is the value of $\epsilon$ in effect, logged
+because it is annealed over the run.
+
+\paragraph{Replay consistency.}
+\met{replay_logratio_max} is a correctness check specific to the recurrent
+implementation. On the first mini-batch of the first epoch, before anything
+has been optimised, the update's forward pass should reproduce the rollout's
+log-probabilities exactly, so the log-ratio must be zero to floating-point
+error (about $10^{-6}$). A larger value means the update's forward pass is not
+the rollout's---almost always a hidden state that was restored incorrectly---
+and its only other symptom is a \met{clip_frac} that reads like an aggressive
+learning rate. Cheap to compute and included for that reason
+\cite{engstrom2020implementation}.
+
+\paragraph{Optimisation state.}
+\met{lr_actor} and \met{lr_critic} are the two learning rates in effect,
+logged separately because the actor and the critic have separate optimisers
+and separate annealing. \met{actor_grad_norm} is the actor's gradient norm
+before clipping, averaged over the optimiser steps actually taken (it is
+undefined on mini-batches the early stop skipped, and those are excluded from
+the mean rather than dragging it to zero).
+
+\paragraph{Critic warm-up.}
+\met{critic_warmup} is $1$ on the iterations in which only the critic is
+learning. A run that starts from imitated weights arrives with a policy worth
+keeping and a critic that knows nothing about it, so the first advantages
+measure the critic's error rather than the action's merit; those iterations
+spend them on the critic alone. The column exists because every actor-side
+number is then flat for a reason that has nothing to do with the policy: the
+actor's weights, its exploration width and the auxiliary head are left
+untouched, and \met{epochs_run} reads $0$. It marks, too, the only iterations
+in which the task metrics of Section~\ref{sec:metrics-rl-task} describe the
+imitated weights exactly as they were handed over, since nothing has yet moved
+them.
+
+\subsection{Value Function}
+\label{sec:metrics-rl-value}
+
+The critic estimates $V(s)$, and everything in the advantage rests on it. Its
+health is described by the following columns.
+
+\paragraph{Losses.}
+\met{vf_loss} is the mean squared regression error of $V(s)$ onto the GAE
+returns, optionally clipped so that the value cannot move more than a fixed
+range from what it predicted during collection; \met{critic_loss} is the same
+quantity times its coefficient. \met{critic_grad_norm} is the critic's
+gradient norm before clipping.
+
+\paragraph{Explained variance.}
+The single most informative number about the critic is
+%
+\begin{equation}
+  \text{\met{explained_var}}
+  = 1 - \frac{\operatorname{Var}(R_t - V(s_t))}{\operatorname{Var}(R_t)},
+\end{equation}
+%
+computed over the \emph{whole rollout}, with the values the rollout was
+collected with. A value of $1$ is a perfect critic, $0$ one no better than
+predicting the mean return, negative one worse than that.
+\met{explained_var_batch} asks the same question of each mini-batch and
+averages the answers, and it is logged beside the first only as a warning: a
+mini-batch is a handful of sequences of \emph{consecutive} steps whose returns
+barely vary, so its denominator is tiny and individual batches reach large
+negative values that the mean inherits. Measured on a fleet run,
+\met{explained_var_batch} sat near $-1.4$ for 390 iterations with a minimum of
+$-58$, while the value estimate tracked the returns in mean and spread
+throughout. The per-batch figure had already been acted on---the discount had
+been cut on its evidence---before the discrepancy was understood, which is why
+the rollout-level one is the number the diagnostic tables in
+Chapter~\ref{ch:results} are calibrated against.
+
+\paragraph{Value and return statistics.}
+\met{value_mean}, \met{value_std}, \met{value_min} and \met{value_max}
+describe the distribution of $V(s)$ over the update, and \met{return_mean}
+and \met{return_std} that of the GAE returns it is regressed onto;
+\met{value_mse} is their mean squared difference. \met{value_std} deserves
+its own reading: exactly $0.0$ is not a small number, it is a constant
+predictor. During this work a whole fleet run reported \met{value_std}
+exactly $0.0$ and \met{explained_var} of $10^{-6}$ because the critic
+received the observation on a different scale from the actor; every unit of
+its first activation layer saturated, and the only thing the value head could
+still learn was its output bias. The advantages were then simply the raw
+returns.
+
+\paragraph{Advantages.}
+\met{adv_mean} and \met{adv_std} are the mean and spread of the advantages as
+GAE produced them, \emph{before} the per-mini-batch normalisation. A mean far
+from zero says that the critic and the returns have drifted apart, which the
+losses alone do not distinguish from a hard task; a collapsing spread says
+that there is nothing left to learn from, or that the reward has stopped
+varying.
+
+\subsection{Exploration and Action Statistics}
+\label{sec:metrics-rl-actions}
+
+For a continuous action space the policy is a Gaussian whose mean the network
+produces and whose standard deviation is a trained parameter of the agent.
+Five columns describe what that distribution is doing.
+
+\begin{itemize}
+  \item \met{action_std_mean} --- the mean standard deviation of the Gaussian.
+    It is trained, so watching it is how one sees exploration collapsing
+    (approaching zero: the entropy bonus is too low and the policy has stopped
+    exploring) or running away.
+  \item \met{action_abs_mean} --- the mean absolute value of the \emph{sampled}
+    actions, i.e.\ how large the commands sent to the environment are.
+  \item \met{action_sat_frac} --- the fraction of sampled action components that
+    the environment's clamp altered. The buffer stores the unclamped sample
+    and its log-probability, so a rising fraction means the update is learning
+    about commands the robot never applied.
+  \item \met{action_mu_abs_mean} --- the mean absolute value of the Gaussian's
+    \emph{mean}, as opposed to its samples.
+  \item \met{action_mu_outside_frac} --- the fraction of components on which the
+    Gaussian's mean itself lies outside the action envelope. This is a
+    different fact from saturation: a mean well outside the limits is a policy
+    the clamp has made deterministic in those components---the sampling noise
+    no longer changes what the robot is sent---while the entropy bonus keeps
+    paying for exploration that no longer exists. Nothing in the standard
+    objective charges for the excess, which is why an explicit bound penalty
+    was added to the actor loss; this column is what says whether it is
+    holding.
+\end{itemize}
+
+\subsection{Reward Decomposition and Flight Signals}
+\label{sec:metrics-rl-reward}
+
+\paragraph{Per-step reward.}
+\met{reward_step_mean} and \met{reward_step_std} are the mean and standard
+deviation of the environment's reward over every step of the rollout, with
+no assumptions about how episodes end.
+
+\paragraph{Contribution of each term.}
+The rewards used on the fleet are composed of named terms---\texttt{progress},
+\texttt{time}, \texttt{safety}, \texttt{tilt}, \texttt{altitude},
+\texttt{smoothness} and \texttt{terminal}---each of which knows its own
+arithmetic and its share of the per-step budget (Section~\ref{sec:rl-reward}).
+The environment accumulates what each term contributed, and the trainer writes
+the mean per-step contribution of each as \met{reward/<term>}. The values sum
+to \met{reward_step_mean} exactly, so a gap between the two means something is
+contributing without being logged. This decomposition is what makes the
+weights tunable against a measurement rather than against behaviour: a term
+that has taken the reward over---a time cost grown into the whole signal, a
+terminal penalty carrying almost the whole return, which is what one
+configuration of the reward was found to do (Section~\ref{sec:res-rl-fleet})---is
+a number rather than an inference. From the shares of the end reasons and the mean
+episode length, the dense part of the return can also be reconstructed as
+$\text{dense} = \text{\met{ep_return_mean}} + R_{\text{crash}}\,P(\text{crash}) -
+R_{\text{goal}}\,P(\text{goal})$; a return that improves while the dense part
+worsens is termination bias, not learning.
+
+\paragraph{What the fleet flew through.}
+A cost of zero has two causes: the robot stayed clear, or the term never
+fired. The reward columns answer the second; a set of tracked signals answers
+the first. For every signal the fleet reports, the trainer logs
+\met{signal/<name>_mean}, its mean over the rollout;
+\met{signal/<name>_worst}, the end of its range that means trouble; and
+\met{signal/<name>_coverage}, the fraction of steps on which it could be
+measured at all. The direction of \emph{worst} is declared per signal, because
+one aggregate cannot serve both: the minimum of a clearance, the maximum of an
+attitude---the minimum tilt over a rollout says nothing. Coverage qualifies
+the other two: a term whose signal was absent charged nothing, which on its
+own reads as a term with nothing to complain about. The signals are chosen so
+that every terminal condition the fleet can hit has one, so that a
+termination that dominates a run can be traced to how close the fleet was
+flying to the threshold behind it; Table~\ref{tab:metrics-signals} lists them.
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \caption{Signals tracked over each rollout, with the direction reported as
+  \texttt{\_worst}. Counters are reported by how much they grew, fleet-wide
+  (\texttt{\_total}) and on the worst single slice (\texttt{\_worst\_slice}).}
+  \label{tab:metrics-signals}
+  \begin{tabular}{@{}ll>{\raggedright\arraybackslash}p{0.52\textwidth}@{}}
+    \toprule
+    \textbf{Signal} & \textbf{Worst} & \textbf{What it says} \\
+    \midrule
+    \met{min_obstacle_dist_nofloor} & min & how close to anything the fleet actually flew, ground excluded \\
+    \met{obstacle_sector_<k>} & min & the same clearance per direction, in eight azimuth sectors: \emph{where} the fleet passes close to things, and not only how close \\
+    \met{height_agl} & min & whether the altitude band is being held \\
+    \met{tilt_gt} & max & how close to the attitude limit, which ends most episodes \\
+    \met{d_goal} & min & the closest approach, when nothing arrives \\
+    \met{yaw_error} & max & heading error against the one the mission asked for \\
+    \met{speed_gt} & max & whether the vehicle is moving at all \\
+    \met{stall_steps} & max & consecutive steps the robot was told to move and did not: how close the fleet flies to the stall terminal, and on a slice where none is armed, how often it would have fired \\
+    \met{pipeline_latency_ms} & max & the age of the observation \\
+    \met{index_drift} & max & drift of the ground-truth frame the reward reads \\
+    \addlinespace
+    \textbf{Counter} & & \\
+    \met{dropped_clouds} & -- & clouds the perception chain produced and the bridge could not use \\
+    \met{stale_clouds} & -- & clouds older than the step that asked for them \\
+    \met{advance_steps} & -- & physics steps spent: the simulation work the rollout cost \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Beside the distributions, the slices' own counters are reported as
+\met{signal/<name>_total} and \met{signal/<name>_worst_slice}, by how much
+they grew over the rollout. The slices zero them on every episode reset, so a
+rollout sees them saw-tooth and the growth is accumulated across the resets.
+Two numbers, because nothing in the reward reads them and only the pair can
+tell two situations apart: a third of the clouds dropped on one slice is a
+broken slice training on a world it is barely seeing, while the same total
+spread evenly is a fleet running too hot.
+
+\subsection{Normalisers and Network Health}
+\label{sec:metrics-rl-health}
+
+\met{obs_rms_var_mean} is the mean variance the external observation
+normaliser is dividing by, and \met{ret_rms_var} the variance of the discounted
+return the reward normaliser is dividing by, when either is enabled. Both are
+lifetime estimates with no discount, so what remains to read in them is a
+\emph{drift}, which is the distribution genuinely moving: a jump that then
+decays slowly used to mean a single outlier had permanently inflated the
+scale, which is why each sample is now bounded before being folded in.
+
+\met{encoder/mean}, \met{encoder/std} and \met{encoder/norm} are the same
+statistics as in Section~\ref{sec:metrics-health}, but measured over every
+time step of the rollout rather than over one batch, since a rollout collects
+one time step at a time. \met{state/cell_<k>/mean,std,max} are the hidden-state
+norms, as before.
+
+The auxiliary geometry task of Section~\ref{sec:metrics-geometry} can be
+switched on here as well, scored against what the fleet's own bridge measures
+on each cloud rather than against a corpus's stored targets. Its columns are
+\met{aux/loss}, \met{aux/explained_dim_0} and \met{aux/explained_dim_1}, which
+are the quantities defined there under the prefix this trainer writes, formed
+once per iteration from the iteration's means. Its loss is added to the
+actor's, so whatever holds the actor still---the critic warm-up, the trust
+region's early stop---holds the head still too, while the columns keep being
+written. On those iterations they are a measurement of what the encoder
+already knows rather than of what the update has taught it.
+
+\subsection{Efficiency and Thermal Guard}
+\label{sec:metrics-rl-cost}
+
+\met{total_steps} and \met{time_elapsed_s} place the iteration in the run;
+\met{sps} is the throughput in environment steps per second. The wall-clock
+time of an iteration is split into \met{collect_time_s} (the rollout as a
+whole), \met{env_time_s} (the part spent inside the environment's
+\texttt{step}, i.e.\ the simulator), \met{policy_time_s} (the actor's forward
+passes during collection) and \met{update_time_s} (the optimisation). One
+number for all of them sends the optimisation effort to the wrong place, and
+on the fleet it did: the simulator, not the trainer, is the bottleneck.
+
+Long runs on a workstation are paused when the hardware overheats.
+\met{gpu_temp_c} and \met{cpu_temp_c} are the temperatures read at the end of
+the iteration and \met{thermal_pause_s} the wall-clock time the guard has
+taken so far, so that a slow iteration can be told from a paused one.
+

@@ -25,20 +25,34 @@
 \mainmatter
 \input{chapters/CH01_Introduction.tex}
 \input{chapters/CH02_Related_Work.tex}
-\input{chapters/CH03_ROS2.tex}
-\input{chapters/CH04_LNN.tex}
-\input{chapters/CH05_Metrics.tex}
+\input{chapters/CH03_Background.tex}
+
+\part{Methodology}
+Part~I describes what was built: the pipeline that produces the observation, the
+networks that consume it, and the two-stage procedure that trains them. It makes
+no measurements --- every figure it would quote belongs to Part~II.
+\input{chapters/CH04_Pipeline.tex}
+\input{chapters/CH05_LNN.tex}
 \input{chapters/CH06_Training.tex}
-\input{chapters/CH07_Conclusions.tex}
+
+\part{Experiments}
+Part~II describes how the work is measured and what it measured. It fixes the
+infrastructure, the protocol and the two families of metrics before reporting a
+single result, so that no number in the last chapter is read on a scale defined
+after it was obtained.
+\input{chapters/CH07_Experiments.tex}
+\input{chapters/CH08_Results.tex}
+
+\input{chapters/CH09_Conclusions.tex}
 
 % ----- APPENDICES -----
 \begin{appendices}
-%\input{appendix/A-...}
+\input{appendix/A-metrics.tex}
 \end{appendices}
 
 % ----- BIBLIOGRAPHY -----
 \backmatter
-\nocite{*}   % comment out to list only the entries actually cited in the text
+% \nocite{*}   % every entry in the .bib is cited in the text; uncomment to list them all anyway
 \printbibliography[heading=bibintoc]
 
 \end{document}

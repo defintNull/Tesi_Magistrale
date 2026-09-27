@@ -1,0 +1,114 @@
+%!TEX root = ../main.tex
+\chapter{Background}
+\label{ch:background}
+
+This chapter sets out the way an autonomous robotic system is conventionally
+built. It is not a survey: it is the minimum vocabulary needed to read the
+chapters that follow, and the statement of the problem they address.
+
+\section{The Node Model of ROS~2}
+\label{sec:bg-ros2}
+
+A robot is not a program. It is a set of concurrent processes that read sensors
+at different rates, estimate quantities, decide and command actuators, and that
+must keep working when one of them stops. Robotic \emph{middleware} is the
+infrastructure that makes it possible to compose a system of this kind without
+its components knowing one another.
+
+The model adopted by ROS~2 \cite{macenski2022ros2} organises the system as a
+graph of \emph{nodes}, independent processes that communicate by publishing and
+subscribing typed messages on named channels. A node that publishes does not
+know who reads it, nor whether anyone reads it; a node that subscribes does not
+know who produces the datum. The coupling between components is therefore
+limited to the type of the message and the name of the channel, and from this
+property follow the three that matter here: a component can be replaced without
+modifying the others; the system can be observed from the outside by listening
+to the channels, which makes diagnosis a measurement rather than a conjecture;
+and one and the same node can operate indifferently on data produced by a
+simulator or by a real device, provided they arrive in the same form.
+
+To this is added a mechanism specific to geometry. The measurements of the
+sensors are each expressed in their own reference frame, and the middleware
+maintains a tree of the transforms between such frames, updated over time, which
+any node may query in order to carry a quantity from one frame to another. It is
+the infrastructure on which any form of fusion between different sensors rests.
+
+\section{The Classical Autonomy Stack}
+\label{sec:bg-stack}
+
+On that infrastructure, established practice builds a chain of stages, each of
+which consumes the product of the preceding one.
+
+\paragraph{Perception.}
+The raw sensor data are validated, filtered and converted into a common form. It
+is the stage at which what constitutes a valid measurement is decided, and in
+which the characteristics of the individual device --- range, field of view,
+noise, rate --- are taken into account.
+
+\paragraph{State estimation.}
+The measurements that observe motion are combined into a single estimate of the
+pose of the vehicle. The standard instrument is a recursive Bayesian filter, in
+its extended or unscented variant, which maintains the state and corrects it at
+every incoming measurement, weighing it by its own uncertainty
+\cite{moore2014localization}. Since every source observes only a part of the
+motion and each drifts in its own way, the quality of the result depends on how
+faithfully each declares its own uncertainty.
+
+\paragraph{Map construction.}
+The pose estimate on its own drifts: the error accumulates and nothing in the
+estimation chain can notice it. Simultaneous localisation and mapping corrects
+that drift by recognising places already visited and redistributing the
+correction over the path \cite{cadena2016slam}. Alongside the global map so
+obtained, navigation requires a local representation of free and occupied space,
+typically an occupancy grid, planar or volumetric \cite{hornung2013octomap}.
+
+\paragraph{Planning and control.}
+On the representation so constructed, a planner computes a path towards the goal
+and a controller translates it into velocity commands that respect the kinematic
+limits of the platform. Mature navigation stacks \cite{macenski2020nav2}
+organise this part as a state machine alternating global planning, local
+tracking and recovery behaviours when the path is not traversable.
+
+\medskip
+
+The scheme has a notable property: every stage is inspectable and every decision
+is traceable to a rule someone wrote. It is the reason why it remains the
+industrial standard, and why in degraded environments it still represents the
+highest engineering level reached, as the heterogeneous robot teams of the DARPA
+Subterranean Challenge have shown \cite{tranzatto2022cerberus}. It is also the
+reason why this thesis does not replace it in its entirety.
+
+\section{The Cost of Heterogeneity}
+\label{sec:bg-portability}
+
+The scheme has a cost, however, which appears when the same system must work on
+different platforms. Each stage is parameterised, and its parameters are not
+universal properties: they are tunings. The threshold beyond which a range
+measurement is considered noise depends on the sensor; the parameters of the
+estimation filter depend on which sources are present and on how reliable each
+of them is on that platform; the inflation radius of the obstacles depends on
+the extent of the vehicle; the gains of the controller depend on the dynamics of
+the body.
+
+It follows that what survives a change of robot is the structure of the chain,
+not the working system. Porting a proven stack to a new platform means going
+through every stage and retuning it, and the cost recurs at every variation of
+the sensor suite. The problem is the more relevant the more heterogeneous the
+fleet: the case treated in this thesis comprises ground and aerial platforms,
+with velocity limits and masses differing by orders of magnitude, and with
+different sets of sensors.
+
+A second cost concerns the decision stage. Classical planning requires the
+environment to be represented in a form on which a rule can operate, and
+requires the rule to anticipate the cases it will encounter. Where the
+environment is cluttered, dynamic or never mapped, the set of anticipated cases
+proves incomplete, and the resulting behaviour is conservative at best and
+deadlocked at worst.
+
+It is on these two costs that the present work acts, and it acts on them
+asymmetrically: the first four stages are preserved, but generated from a
+declaration of the sensors present instead of being tuned for one platform
+(Chapter~\ref{ch:pipeline}), while the decision stage is replaced by a learnt
+policy that reads the local representation of space, the pose and the goal, and
+produces the velocity command directly (Chapters~\ref{ch:lnn}
+and~\ref{ch:training}).

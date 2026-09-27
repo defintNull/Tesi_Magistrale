@@ -2,9 +2,171 @@
 \chapter{Related Work}
 \label{ch:related}
 
-% Suggested sections (uncomment / rename as the survey takes shape):
-% \section{Learning-Based Navigation for Aerial and Ground Robots}
-% \section{Liquid Neural Networks in Robotics}
-% \section{Point-Cloud Encoders and Sensor-Agnostic Perception}
-% \section{Imitation Learning and Reinforcement Learning Fine-Tuning}
-% \section{Reward Shaping for Safe Navigation}
+The work described in this thesis stands at the intersection of four strands
+that largely proceed separately: learnt navigation for mobile robots, the
+transfer of policies across different bodies, continuous-time networks, and
+two-stage training by imitation and reinforcement. Of each, only what is needed
+to delimit the contribution is recalled here, distinguishing what is established
+from what remains open.
+
+\section{Learnt Navigation for Mobile Robots}
+\label{sec:rel-navigation}
+
+Autonomous navigation has long been addressed by composing separately designed
+modules --- state estimation, map construction, path planning, control ---
+according to the scheme described in Chapter~\ref{ch:background}. The learnt
+alternative replaces part of that chain with a policy mapping the observation
+directly onto the command, and has in recent years reached performance that
+modular composition does not attain.
+
+The most significant results come from flight. A policy trained entirely in
+simulation and transferred to real hardware has demonstrated high-speed flight
+in unknown natural environments, replacing the whole planning chain with a
+network that receives depth and produces a trajectory
+\cite{loquercio2021flight}; reinforcement learning has subsequently produced
+racing policies competitive with professional human pilots
+\cite{kaufmann2023racing}. On the side that bears most directly on this thesis,
+continuous-time networks have demonstrated robust aerial navigation outside the
+training distribution, preserving the learnt behaviour under environmental
+conditions never observed \cite{chahine2023flight}.
+
+These works share an assumption, however: the policy is trained for one
+platform. The body, the sensors and the kinematic limits are constants of the
+experiment, and not quantities the network observes.
+
+\section{Cross-Embodiment Transfer and Robot Foundation Models}
+\label{sec:rel-embodiment}
+
+Independence from the body is not a capability that still awaits demonstration.
+The foundational work on datasets aggregated from heterogeneous platforms showed
+that training on demonstrations coming from dozens of different robots produces
+positive transfer across platforms, with generalist policies that outperform
+their single-robot counterparts \cite{openx2024}; on that basis a generation of
+vision-language-action models has developed, pursuing generalist control across
+different bodies \cite{black2024pi0}. In academic work, morphology-agnostic
+control shows that a single controller can generalise to morphologies never
+seen, either through transformer representations of the kinematic skeleton
+\cite{gupta2022metamorph} or through graph-based policies \cite{luo2025gcnt}.
+
+What characterises such approaches is where independence from the body resides.
+In all of them the transfer takes place through the model and the training
+process: the abstraction that makes it possible is embedded in the parameters
+and fixed before deployment. Two practical consequences follow. The first is
+that every new body must be represented in the training data. The second is one
+of scale: the models that achieve this generality carry a computational cost
+that exceeds what is available on board a small platform, which is measured at
+a few inference steps per second even on high-end accelerators
+\cite{zhou2026vlaxpu} and collapses by orders of magnitude on genuinely
+inexpensive hardware \cite{williams2025litevla}.
+
+The present thesis adopts an intermediate and more modest position: the body is
+neither learnt from data nor inferred from the observation, but \emph{declared}
+to the network as part of the observation itself, in the form of the kinematic
+limits and the model identifier described in
+Section~\ref{sec:observation-vector}. The resulting generalisation is limited to
+the platforms that descriptor is able to represent, but requires neither
+retraining nor additional computational capacity.
+
+\section{Heterogeneous Multi-Robot Policies}
+\label{sec:rel-heterogeneous}
+
+It would be incorrect to claim that multi-agent learning assumes homogeneous
+agents. It is true that a substantial part of the literature rests on parameter
+sharing, with the consequent restriction to the homogeneous case, but
+formulations dedicated to learning with heterogeneous agents exist
+\cite{zhong2024harl}, as do multi-robot systems with decentralised policies and
+explicit heterogeneity, trained in partially observable environments
+\cite{bettini2023hetero}.
+
+Particularly close to this work is the approach in which different robots
+communicate their own \emph{capabilities}, that is a declarative description of
+what each of them is able to do, and the shared policy is conditioned on it
+\cite{howell2023capabilities}. The mechanism employed in this thesis is
+analogous in form --- an explicit description of the body entering the
+observation --- but serves a different purpose: not coordination between agents,
+but the reusability of a single policy across a fleet of platforms that do not
+cooperate with one another.
+
+\section{Continuous-Time Networks and Liquid Neural Networks}
+\label{sec:rel-lnn}
+
+The line of models from which the cells employed in this thesis descend is
+recalled in detail in Section~\ref{sec:lnn-background}, and only its terms are
+summarised here. Neural ordinary differential equations \cite{chen2018neuralode}
+define the hidden state as the solution of a differential equation rather than
+as the result of a discrete recurrence; continuous-time recurrent networks
+\cite{funahashi1993ctrnn} stabilise their behaviour by introducing a time
+constant. Liquid networks make that constant dependent on the input, by explicit
+modulation \cite{hasani2021ltc}, by a closed-form approximation of the solution
+\cite{hasani2022cfc}, or by making variable the capacitance of the equivalent
+circuit as well \cite{farsang2024lrc}. Alongside them stands the sparse wiring
+of \emph{Neural Circuit Policies} \cite{lechner2020ncp}, which yields compact
+and inspectable control policies.
+
+Two properties make this family pertinent to the problem addressed. The first is
+the ability to handle observations at an irregular rate, which in a real robotic
+system is the norm rather than the exception. The second is compactness: the
+control policies cited employ a number of units orders of magnitude smaller than
+traditional recurrent architectures of comparable capability
+\cite{lechner2020ncp}, a property that the systematic comparison of the family
+confirms on memory footprint as well \cite{zong2025lnnsurvey}.
+
+What the literature does not report, and what this thesis sets out to measure,
+is the comparison between the three cells and between the two wirings
+\emph{with everything else held equal} on one and the same navigation problem:
+the available works each adopt one cell and demonstrate its effectiveness, but
+do not place the alternatives on the same bench.
+
+\section{Sparse Encoders for Point Clouds}
+\label{sec:rel-encoders}
+
+The representation of the environment the network receives is a cloud of
+occupied voxels, and reducing it to a descriptor of fixed length is the task of
+the encoder. The two available families are the one operating directly on the
+unordered set of points \cite{qi2017pointnet} and the one that discretises space
+on a grid and applies convolutions to it. In the latter, \emph{submanifold}
+convolutions keep the computation anchored to the occupied sites alone instead
+of densifying the grid \cite{graham2018submanifold}, a property that makes
+tractable an input in which almost all cells are empty. It is the solution
+adopted in Section~\ref{sec:sparse-encoder}, and the reason for the choice is
+that the local map produced by the pipeline is already quantised on a grid:
+operating on continuous points would mean disregarding a structure the upstream
+system has already imposed.
+
+\section{Imitation Followed by Reinforcement}
+\label{sec:rel-imitation-rl}
+
+Imitation learning makes it possible to obtain an initial behaviour from
+recorded demonstrations, but suffers from a structural defect: the learnt policy
+is evaluated on the distribution of the states visited by the demonstrator,
+whereas in execution it visits the states produced by its own actions, and the
+error accumulates along the trajectory \cite{ross2011dagger}. Reinforcement
+learning does not have that defect, since it learns on the distribution it
+generates itself, but requires a number of interactions that a real robot cannot
+provide.
+
+The combination of the two --- imitation to obtain a starting behaviour,
+reinforcement to refine it on the correct distribution --- is the strategy
+adopted in Chapter~\ref{ch:training}. The reinforcement stage employs a
+recurrent variant of proximal policy optimisation \cite{schulman2017ppo} with
+generalised advantage estimation \cite{schulman2016gae}, and the design of the
+reward abides by the principle that a shaping term must not alter the optimal
+policy \cite{ng1999policy}. The implementation choices that in such algorithms
+bear on the result as much as the formulation itself are documented in
+\cite{engstrom2020implementation}, and Section~\ref{sec:training-rl} states
+explicitly those adopted here.
+
+\section{Positioning of This Work}
+\label{sec:rel-positioning}
+
+With respect to the strands recalled above, the contribution of this thesis is
+circumscribed and can be stated by difference. It does not propose a new
+continuous-time architecture, but compares the three existing ones under equal
+conditions on a real navigation problem. It does not pursue independence from
+the body through training on many bodies, but obtains it by declaring the body
+in the observation, at the cost of a generalisation limited to what the
+descriptor represents. It does not address coordination between agents, since
+the fleet employed in reinforcement training serves to produce experience in
+parallel and not to cooperate. And it takes as a constraint, rather than as a
+subsequent question, that the resulting policy must run on the on-board hardware
+of the platform that employs it.

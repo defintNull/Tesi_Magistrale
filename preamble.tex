@@ -4,6 +4,12 @@
 %   graphicx, color, amsmath, booktabs, caption, fancyhdr)
 % =====================================================================
 
+% Sectioning depth: subsubsections are numbered and listed in the table of
+% contents (the metric groups of Chapter~\ref{ch:experiments} live at that
+% level). Set tocdepth to 2 for a shorter table of contents.
+\setcounter{secnumdepth}{3}
+\setcounter{tocdepth}{3}
+
 % Language
 \usepackage[english]{babel}
 
@@ -22,6 +28,18 @@
 
 % Figures
 \graphicspath{{images/}}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, fit, backgrounds, calc}
+\tikzset{
+  blk/.style   = {draw, rounded corners=2pt, align=center, font=\small,
+                  minimum height=8mm, inner xsep=5pt},
+  lyr/.style   = {blk, fill=black!5},
+  ext/.style   = {blk, dashed, fill=white},
+  flow/.style  = {-{Latex[length=2mm]}, thick},
+  thin flow/.style = {-{Latex[length=1.6mm]}, semithick},
+  lbl/.style   = {font=\footnotesize, align=center, inner sep=1.5pt},
+  note/.style  = {font=\footnotesize\itshape, align=center},
+}
 \usepackage{subcaption}
 \usepackage{float}
 
@@ -37,7 +55,14 @@
 \usepackage{xcolor}
 
 \lstset{
-    basicstyle=\ttfamily\small,
+    % \linespread{1} inside basicstyle: listings must not inherit the 1.5
+    % line spacing of the body text, which makes code unreadable.
+    basicstyle=\linespread{1}\ttfamily\small,
+    columns=fullflexible,
+    keepspaces=true,
+    showstringspaces=false,
+    aboveskip=1.2em,
+    belowskip=1.2em,
     keywordstyle=\color{blue},
     commentstyle=\color{gray},
     stringstyle=\color{red},

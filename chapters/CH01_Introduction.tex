@@ -41,16 +41,30 @@ intervals, and the correct manoeuvre depends on what has just happened.
 
 It is this last requirement that motivates the choice of \emph{Liquid Neural
 Networks} (LNN): a family of continuous-time recurrent networks, derived from
-Liquid Time-Constant networks, in which the internal state evolves according to
-a differential equation whose integration step is the real interval elapsed
-between two observations. Compared with classical recurrent networks they offer
-a memory that accounts for physical time, a small size and --- in the variants
-with a sparse wiring inspired by biological neural circuits --- an interpretable
-structure. They were proposed precisely for robot and vehicle control tasks, but
-their application to a multi-robot, multi-sensor platform fed with point clouds
-rather than images has not been explored. This thesis studies whether and how
-these networks can serve as the microbrain of an agnostic platform, and which of
-their variants is best suited to the task.
+Liquid Time-Constant networks, in which the internal state evolves by
+integrating a differential equation rather than by a discrete iteration, so
+that the interval actually elapsed between two observations enters the update
+instead of being assumed constant. \emph{How} it enters differs from one cell
+to another, and that difference is itself one of the things this work compares
+(Section~\ref{sec:cell-time}). Compared with classical recurrent networks they
+offer a memory that accounts for physical time, a small size and --- in the
+variants with a sparse wiring inspired by biological neural circuits --- a
+connectivity fixed at initialisation rather than learnt, which the original
+formulation credits with making the resulting circuit interpretable; what this
+work retains of that claim, and what it does not, is stated in
+Section~\ref{sec:lnn-wiring}. These networks were proposed precisely for robot
+and vehicle control tasks, but their application to a multi-robot, multi-sensor
+platform fed with point clouds rather than images has not been explored.
+
+The question this thesis sets out to answer is therefore the following.
+
+\begin{quote}
+\emph{Can a liquid neural network serve as the microbrain of a
+hardware-independent platform --- consuming an observation whose form does not
+depend on the sensor that produced it, and commanding vehicles whose kinematics
+it reads from that same observation --- and which of its variants is best suited
+to the task?}
+\end{quote}
 
 \section{Objectives}
 
@@ -100,37 +114,104 @@ metrics.
 
 \section{Contributions}
 
+The objectives above state what was done; this section states what is claimed as
+new, and where the boundary of the claim lies.
+
+\paragraph{An observation contract in which the body is declared, not inferred.}
+The policy is trained and executed on a representation of the environment that
+carries no trace of the sensor that produced it, and on a declaration of the
+vehicle --- its kinematic limits, its extent, its model identifier --- supplied
+as part of the observation itself. Changing platform is therefore a change of
+observation and not of problem, and a single policy covers a fleet of bodies
+without retraining and without additional computation
+(Sections~\ref{sec:observation-vector} and~\ref{sec:rl-pomdp}). It is a weaker
+form of body independence than the one obtained by training across many bodies
+(Section~\ref{sec:rel-embodiment}), and it is claimed as such: it generalises
+only as far as that declaration describes.
+
+\paragraph{A controlled comparison of the liquid cells on a real navigation
+problem.}
+The three continuous-time cells considered --- LTC, CfC and LRCU --- and the two
+wirings are compared with everything else held equal: the same observation, the
+same encoder, the same widths, the same output stage and the same training
+settings (Section~\ref{sec:networks-implementation}). The literature adopts one
+cell at a time and demonstrates its effectiveness; placing the alternatives on
+the same bench, on one problem, is the contribution of Chapters~\ref{ch:lnn}
+and~\ref{ch:results}, together with an explicit account of the two asymmetries
+the comparison cannot remove.
+
+\paragraph{A two-stage training design, and the instrumentation that makes it
+readable.}
+Imitation from recorded flights followed by reinforcement on a fleet of parallel
+simulations is not in itself new. What is contributed here is the design that
+makes the second stage readable on this problem: a loss scaled by each robot's
+own limits so that a heterogeneous fleet needs no special case
+(Section~\ref{sec:sl-loss}), a reward whose terms are constrained by two
+explicit budget inequalities (Section~\ref{sec:rl-reward}), and two families of
+metrics built to separate genuine learning from the behaviours that imitate it
+--- predicting nothing, echoing the velocity already observed, or improving a
+return while the vehicle never arrives (Chapter~\ref{ch:experiments}).
+
+\paragraph{What the work establishes negatively.}
+Two of its results are limits rather than gains, and are reported as such: what
+imitation alone does and does not teach the encoder about the scene
+(Section~\ref{sec:geometry-head}), and the fact that a reward satisfying its
+budget constraints can still converge to immobility, so that those constraints
+are necessary and not sufficient (Section~\ref{sec:rl-reward}). In a comparison
+whose purpose is to identify a candidate, a negative result carries the same
+weight as a positive one.
+
+\paragraph{What is not claimed.}
+The pipeline of Chapter~\ref{ch:pipeline} precedes this thesis: it was built
+during the internship that led to it, and is presented here because everything
+else rests on it --- it produces the observation the network consumes, it
+recorded the corpus the network is trained on, and it is the environment in
+which the network is executed and measured. Its architecture is described for
+those three roles, and not claimed as a result of this work.
+
 \section{Thesis Outline}
 
-The rest of the thesis is organised as follows.
+The rest of the thesis is organised in two parts, preceded by the chapters that
+set the context and followed by the conclusions.
 
 Chapter~\ref{ch:related} places the work with respect to the literature:
 learnt navigation for aerial and ground robots, Liquid Neural Networks and
 their applications to control, point-cloud encoders, and the combination of
 imitation and reinforcement learning.
 
-Chapter~\ref{ch:ros2} presents the ROS~2 pipeline built during the internship:
-what it does, the hardware-agnostic principle it is built on, how data from
-heterogeneous sensors are fused, and the observation it delivers to the network
---- the observation space on which everything that follows is built.
+Chapter~\ref{ch:background} gives the background the rest of the thesis takes
+for granted: the middleware model a modern robot is assembled on, the classical
+autonomy stack a learnt policy is meant to replace, and the portability problem
+that arises as soon as the same stack has to run on a different platform.
 
+Part~I presents the methodology. Chapter~\ref{ch:pipeline} presents the ROS~2
+pipeline built during the internship: the principle it is built on, how data
+from heterogeneous sensors are fused, the observation it delivers to the
+network --- the observation space on which everything that follows is built ---
+and the parity between its simulated and its real deployment.
 Chapter~\ref{ch:lnn} presents the Liquid Neural Networks: the formulation of
-the LTC, CfC and LRCU cells and of the NCP wiring, the sparse convolutional
-encoder and the auxiliary modules, their implementation in PyTorch and the
-networks that result.
+the LTC, CfC and LRCU cells and of the dense and NCP wirings, the sparse
+convolutional encoder, the auxiliary modules that make the network usable on a
+heterogeneous fleet, their implementation in PyTorch and the architectures that
+result. Chapter~\ref{ch:training} describes how those architectures are
+trained: the two-stage strategy, and then, for each stage, the data or the
+environment it consumes, the objective it optimises and the machinery around
+it --- corpus, splits, augmentation, loss, calibration and schedules for the
+supervised stage; a recurrent variant of PPO with GAE, the vectorised fleet,
+the episode policy, the reward design and the fine-tuning from the imitated
+weights for the reinforcement stage.
 
-Chapter~\ref{ch:metrics} defines, before any result, the metrics through which
-the two training stages are read: what each one measures, why it was
-introduced, and how they are to be read together. It is a self-contained
-chapter, meant as a reference for the chapters that follow.
-
-Chapter~\ref{ch:training} describes the training: the two-stage strategy; for
-the supervised stage, the dataset and its pipeline, the loss function, the
-output calibration and the results; for the reinforcement stage, the algorithm
-(a recurrent variant of PPO with GAE), the environment and the episode policy,
-the reward design, the fine-tuning from the imitated weights, the validation on
-a standard control task and the results on the fleet. The chapter closes with
-the comparison between the architectures.
+Part~II reports the experiments. Chapter~\ref{ch:experiments} fixes, before any
+result, how the two stages are measured: the infrastructure the runs are
+executed on, the protocol under which the architectures are validated and
+compared, and the two families of metrics, one per stage --- what each metric
+measures, why it was introduced and how they are to be read together. It is a
+self-contained chapter, meant as a reference for the one that follows.
+Chapter~\ref{ch:results} reports the results in the same order: the supervised
+stage, from the synthetic validation to the recorded corpus, the reinforcement
+stage, from LunarLander to the fleet, the comparison between the architectures
+in both, and a discussion of what the two stages together do and do not
+achieve.
 
 Chapter~\ref{ch:conclusions} summarises the results obtained, discusses the
 limits of the work and points to future developments.
