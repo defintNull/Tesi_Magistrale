@@ -33,7 +33,7 @@ metrics, one per training stage: supervised in
 Section~\ref{sec:metrics-supervised}, reinforcement learning in
 Section~\ref{sec:metrics-rl}.
 
-\subsection{Conventions and Notation}
+\section{Conventions and Notation}
 \label{sec:metrics-notation}
 
 The network's output is a velocity command
@@ -62,10 +62,10 @@ $\pi_\theta(a \mid s)$ is the stochastic policy, $V(s)$ the critic's estimate of
 the state value, $\gamma$ the discount factor, $A_t$ the advantage of the action
 taken at step $t$ and $R_t$ the corresponding bootstrapped return.
 
-\subsection{Infrastructure and Tooling}
+\section{Infrastructure and Tooling}
 \label{sec:exp-tooling}
 
-\subsubsection{Hardware and Software Environment}
+\subsection{Hardware and Software Environment}
 
 Training is carried out on a single workstation equipped with an NVIDIA RTX~5080
 with \SI{16}{\gibi\byte} of video memory and \SI{32}{\gibi\byte} of system
@@ -73,7 +73,7 @@ memory, on which both the training procedures and the fleet of simulated
 environments run. The memory of the accelerator is the resource that constrains
 the experimental design more than any other: it is shared between the training
 session and the slices of the fleet, and it determines the finest grid on which
-the encoder may be refined during the reinforcement stage
+the encoder may be fine-tuned during the reinforcement stage
 (Section~\ref{sec:rl-networks}).
 
 The software environment is the one declared by the two repositories. The
@@ -84,7 +84,7 @@ pipeline of Chapter~\ref{ch:pipeline} and the simulators run instead in Docker
 containers, so that the version of ROS~2, of the simulator and of the perception
 libraries is fixed by the image rather than by the machine running it.
 
-\subsubsection{Simulation and the Parallel Fleet}
+\subsection{Simulation and the Parallel Fleet}
 
 The reinforcement stage requires many environments in parallel, and each of them
 is an isolated copy of the entire system rather than a simplified model
@@ -109,7 +109,7 @@ memory and accelerator memory. The number so obtained states how many slices
 number the overall throughput grows less than proportionally, and the choice
 made in the experiments is reported in Chapter~\ref{ch:results}.
 
-\subsubsection{Logging and Run Artefacts}
+\subsection{Logging and Run Artefacts}
 
 Every session produces artefacts in two distinct places, and the separation is
 deliberate: what is needed to \emph{read} a session is kept apart from what is
@@ -129,7 +129,7 @@ reported there is generated from one of those files, and every column of those
 files is defined in this chapter. No number reported in what follows was
 transcribed by hand from a console.
 
-\subsubsection{Plotting and Analysis Tools}
+\subsection{Plotting and Analysis Tools}
 
 The figures are produced by two generators, one per stage, which read the log
 files and derive from them one figure per family of metrics, plus a summary
@@ -158,10 +158,10 @@ over the recorded corpus, which is how a terminal threshold is calibrated before
 being armed; and the analysis of the final state of the episodes, which
 separates causes of termination that the aggregate counters do not.
 
-\subsection{Evaluation Protocol}
+\section{Evaluation Protocol}
 \label{sec:exp-protocol}
 
-\subsubsection{Staged Validation: From Synthetic Tasks to the Fleet}
+\subsection{Staged Validation: From Synthetic Tasks to the Fleet}
 
 Neither of the two training stages was applied to the problem before being
 verified on tasks whose answer is known. The progression has three levels, and
@@ -204,7 +204,7 @@ several copies of the same configuration
 (Section~\ref{sec:rl-environment}), and pricing the reward configuration in
 advance (Section~\ref{sec:rl-reward}).
 
-\subsubsection{Data Splits and Held-Out Episodes}
+\subsection{Data Splits and Held-Out Episodes}
 
 The corpus is divided into three partitions --- training, validation and test
 --- according to the run-stratified criterion of Section~\ref{sec:sl-split}. The
@@ -221,7 +221,7 @@ the quantities measured on it do not constitute an unbiased estimate of
 generalisation. That is precisely why the third partition exists, which takes
 part in no decision and is read once, at the end, on the selected models alone.
 
-\subsubsection{Checkpoint Selection and Stopping Criteria}
+\subsection{Checkpoint Selection and Stopping Criteria}
 
 For the supervised stage every epoch produces a checkpoint and no automatic
 interruption takes place (Section~\ref{sec:sl-optimisation}). The checkpoint
@@ -236,14 +236,16 @@ flagged in Chapter~\ref{ch:results} rather than selected in silence.
 For the reinforcement stage there is no single number defining the best
 checkpoint, since the return depends on the reward configuration and is not
 comparable across different configurations. Checkpoints are saved at a fixed
-interval of iterations, and the selection is made on the task metrics of
-Section~\ref{sec:metrics-rl-task}, which describe the behaviour rather than its
-valuation. What is stated in Section~\ref{sec:rl-finetuning} also applies: the
+interval of iterations, and the one to deploy is to be selected on the task
+metrics of Section~\ref{sec:metrics-rl-task}, which describe the behaviour
+rather than its valuation. That selection is not part of the comparison: the
+architectures are compared on the last iterations of each session, at equal
+step budget, so that every network is read at the same point of its training. What is stated in Section~\ref{sec:rl-finetuning} also applies: the
 initial iterations reserved for the critic constitute the measurement of the
 imitated policy on the fleet, and it is with respect to that measurement --- and
-not with respect to zero --- that the gain of the refinement is to be read.
+not with respect to zero --- that the gain of the fine-tuning is to be read.
 
-\subsubsection{Comparison Across Architectures}
+\subsection{Comparison Across Architectures}
 
 The comparison between the six architectures is conducted holding equal
 everything that is not the cell and the wiring: the same observation and the
@@ -255,18 +257,27 @@ together with what is instead not held equal, namely the parameter count and the
 way the elapsed interval reaches the cell, and both asymmetries are to be read
 alongside the result.
 
+Beside the six runs a seventh network, the stateless control of
+Section~\ref{sec:networks-implementation}, under exactly the same conditions. It
+is not a candidate: it is the six with the recurrence taken out, and its role is
+to measure what the recurrent state is worth. Every architecture is therefore
+read against the control as well as against the other five, and a recurrent
+variant that does not beat the control has not earned its state. The same
+holds for the synthetic tasks, where the control is the vector twin without
+state.
+
 For the reinforcement stage the comparison is conducted at equal step budget,
 equal fleet manifest and equal reward configuration, and starting from the
 imitation checkpoints of the same architecture: comparing two architectures from
 weights of different quality would measure the imitation rather than the
-refinement.
+fine-tuning.
 
 The comparison is read neither on the loss alone nor on the return alone, for
 the reason set out at the opening of this chapter, but on the families of
 metrics of Sections~\ref{sec:metrics-supervised} and~\ref{sec:metrics-rl}, which
 were introduced precisely in order to separate what those two numbers conflate.
 
-\subsubsection{Repetitions, Seeds and Reported Variability}
+\subsection{Repetitions, Seeds and Reported Variability}
 
 A difference between two configurations is meaningful only if it exceeds the
 difference between two runs of the same configuration. The protocol therefore
@@ -290,7 +301,7 @@ configuration to be repeated: where one arm of a comparison was run only once,
 the result is reported as indicative rather than as established, and the
 distinction is kept explicit in the text rather than left to the reader.
 
-\subsection{Supervised Training Metrics}
+\section{Supervised Training Metrics}
 \label{sec:metrics-supervised}
 
 The supervised trainer learns to reproduce, at each instant of a recorded
@@ -303,7 +314,7 @@ reported for the training split (prefix \met{train_}) and for the validation
 split (prefix \met{val_}). A third family, \met{val_cal_}, is described in
 Section~\ref{sec:metrics-calibrated}.
 
-\subsubsection{The Training Loss: Cap-Scaled Mean Squared Error}
+\subsection{The Training Loss: Cap-Scaled Mean Squared Error}
 \label{sec:metrics-loss}
 
 The loss that is optimised, and the quantity reported as \met{train_loss} and
@@ -342,7 +353,7 @@ curve can be matched to the schedule. When step-level logging is enabled,
 batches part-way through an epoch, a cheap generalisation check for epochs that
 last hours.
 
-\subsubsection{The Families of Diagnostics}
+\subsection{The Families of Diagnostics}
 \label{sec:metrics-families}
 
 The loss is the quantity optimised, and on this corpus it is not by itself
@@ -403,7 +414,7 @@ of the gradients reaching each block, and the cost of an epoch. None of these is
 visible on a loss curve, and each of them has at some point explained a run that
 would not learn.
 
-\subsubsection{Summary}
+\subsection{Summary}
 
 Table~\ref{tab:metrics-supervised} lists the supervised metrics by the
 question they answer. Each is logged for the training and validation splits,
@@ -448,11 +459,11 @@ and the validation ones additionally through the calibration.
   \end{tabular}
 \end{table}
 
-\subsection{Reinforcement Learning Metrics}
+\section{Reinforcement Learning Metrics}
 \label{sec:metrics-rl}
 
 The reinforcement trainer takes the network the imitation stage produced and
-refines it by flying: same architecture, same weights, now shaped by the
+fine-tunes it by flying: same architecture, same weights, now shaped by the
 consequences of its own actions rather than by a pilot's example. The
 algorithm is a recurrent variant of Proximal Policy Optimization
 \cite{schulman2017ppo} with Generalised Advantage Estimation
@@ -465,7 +476,7 @@ group is the one a reader cares about; the others exist because, at one point
 or another during this work, a run failed in a way the first group could not
 explain.
 
-\subsubsection{The Six Groups}
+\subsection{The Six Groups}
 \label{sec:metrics-rl-groups}
 
 The columns are logged once per iteration and fall into six groups, summarised
@@ -519,7 +530,7 @@ The first group is the one that answers the question the work asks; the other
 five exist because, at one point or another during this work, a run failed in a
 way the first could not explain.
 
-\subsubsection{Summary}
+\subsection{Summary}
 
 Table~\ref{tab:metrics-rl} lists the reinforcement learning metrics by group.
 

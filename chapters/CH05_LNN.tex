@@ -13,7 +13,9 @@ properties that determine the architecture.
 
 It is \emph{partially observable}: a single frame does not say whether the robot
 was accelerating, whether the obstacle ahead is approaching, or how long it has
-been standing still. Memory is required.
+been standing still. Memory is therefore expected to help --- an expectation,
+not a premise, which the stateless control of
+Section~\ref{sec:networks-implementation} exists to test.
 
 It is \emph{non-uniform in time}: the rate at which frames arrive is not
 constant. A discrete-time recurrent network, such as an LSTM
@@ -89,7 +91,7 @@ once and the comparison isolates exactly the two choices.
     \draw[thin flow, dashed] (c1.east)  -- ++(7mm,0)  |- (head.east);
   \end{tikzpicture}
   \caption{The architecture, with the two points of variation. Everything
-           outside the dashed box is common to the six networks compared; inside
+           outside the dashed box is common to all the networks compared; inside
            it sit the two recurrent cells, which differ in their update rule and
            in whether their matrices are masked. The dashed arrows on the right
            are the two bypass paths that only the sparsely wired variants carry
@@ -639,8 +641,10 @@ return self.emit(self.tanh_2(out))   # head -> calibration
 
 \subsection{The selection of the architecture}
 
-The six architectures are declared in a single table, which associates with each
-of them the class that realises it and the hyper-parameters that define it. A
+Every architecture --- the six candidates, the stateless control and the vector
+twins of Section~\ref{sec:networks-implementation} --- is declared in a single
+table, which associates with each of them the class that realises it and the
+hyper-parameters that define it. A
 construction function consults the table and returns the requested network; both
 trainers and the measurement tools go through that function. The tabular form,
 in place of a chain of conditional branches, has two intended consequences: the
@@ -747,6 +751,24 @@ one that does not beat the control has not earned its state. Since it has no
 integration step, the elapsed interval reaches it as it reaches LTC and LRCU, as
 a trailing component of the observation.
 
+\paragraph{The vector twins.}
+Each of the seven networks has a twin that reads the dense observation alone:
+the same cells and wiring, the same bypass paths, the same head and output
+stage, with the encoder removed. The twins are what the synthetic validation
+tasks of Section~\ref{sec:exp-protocol} are run on --- the sine wave for the
+supervised stage, LunarLander for the reinforcement stage --- neither of which
+has a point cloud, so that what a cell does there is evidence about the same
+cell inside the network that flies. Three differences are deliberate. There is
+no encoder, and the fusion takes the observation alone. The widths are those the
+toy tasks were sized with, shared by all seven twins: an input layer of
+\num{128}, two recurrent stages of \num{64} and a head of \num{128}, against
+the $192/80/80/128$ of the spatial networks. And the input layer, the head and
+the output projection are initialised orthogonally, the last with a small gain,
+because the twins are trained from scratch, where a near-zero output is the
+customary starting point of a policy; the spatial networks keep the default
+initialisation because their weights come from imitation. The elapsed interval
+reaches each twin exactly as it reaches its spatial counterpart.
+
 \paragraph{What is held equal.}
 The observation and its normalisation, the encoder and its configuration, the
 width of the fusion, the width of the two recurrent states, the head, the output
@@ -762,7 +784,7 @@ of the two alternatives.
 
 \paragraph{Sizing.}
 The widths were chosen for the problem rather than for the corpus at hand, and
-are held equal across the six architectures so that the comparison does not
+are held equal across the networks compared so that the comparison does not
 become a comparison of capacities. Whether the capacity so chosen is the right
 one is a question for the experiments rather than for this chapter: the relation
 between validation and training loss (Section~\ref{sec:metrics-loss}) and the

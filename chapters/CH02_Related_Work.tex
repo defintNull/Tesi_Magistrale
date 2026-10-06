@@ -146,7 +146,7 @@ generates itself, but requires a number of interactions that a real robot cannot
 provide.
 
 The combination of the two --- imitation to obtain a starting behaviour,
-reinforcement to refine it on the correct distribution --- is the strategy
+reinforcement to fine-tune it on the correct distribution --- is the strategy
 adopted in Chapter~\ref{ch:training}. The reinforcement stage employs a
 recurrent variant of proximal policy optimisation \cite{schulman2017ppo} with
 generalised advantage estimation \cite{schulman2016gae}, and the design of the
@@ -167,6 +167,4 @@ the body through training on many bodies, but obtains it by declaring the body
 in the observation, at the cost of a generalisation limited to what the
 descriptor represents. It does not address coordination between agents, since
 the fleet employed in reinforcement training serves to produce experience in
-parallel and not to cooperate. And it takes as a constraint, rather than as a
-subsequent question, that the resulting policy must run on the on-board hardware
-of the platform that employs it.
+parallel and not to cooperate.

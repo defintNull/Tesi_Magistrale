@@ -45,7 +45,11 @@
 
 % Tables
 \usepackage{array}
-\usepackage{longtable}
+% longtable v4.24 (2025-10-13, TeX Live 2025) raises "Infinite glue shrinkage
+% found in box being split" at every page break of a long table, even in a
+% plain article. Roll back to v4.13 until a fixed release ships; drop the
+% [=v4.13] then.
+\usepackage{longtable}[=v4.13]
 
 % Appendices (listed in the table of contents, with a separator page)
 \usepackage[toc,page]{appendix}
@@ -95,7 +99,7 @@
 \usepackage{hyperref}
 \hypersetup{
     hidelinks,
-    pdftitle={Master's Thesis},
+    pdftitle={Liquid Neural Networks for Sensor-Agnostic Navigation Control},
     pdfauthor={},
     pdfkeywords={thesis, univaq, l'aquila}
 }

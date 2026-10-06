@@ -13,9 +13,9 @@
 \label{sec:res-sl-synthetic}
 
 The first result concerns the machinery rather than the problem. Before any
-network was trained on the corpus, the seven vector networks --- the six
-recurrent ones and the stateless control, each identical to its spatial twin
-except for the missing encoder (Section~\ref{sec:networks-implementation}) ---
+network was trained on the corpus, the seven vector twins of
+Section~\ref{sec:networks-implementation} --- the six recurrent networks and the
+stateless control, each with its cells and wiring but without the encoder ---
 were trained on the synthetic task of Section~\ref{sec:exp-protocol}: predicting
 the next sample of a sine wave whose phase is drawn uniformly in $[0, 2\pi)$,
 whose frequency is drawn in $[0.8, 1.2]$, and to which Gaussian noise of
@@ -39,8 +39,8 @@ from that floor, not from zero.
 
 \paragraph{Outcome.}
 Table~\ref{tab:res-sine} summarises the seven sessions at the last epoch, which
-for all of them is also the best in validation: no validation curve has stopped
-descending after thirty epochs.
+for all of them is also the best in validation: the recurrent networks are still
+improving after thirty epochs, and the control has been flat since the tenth.
 
 \begin{table}[htbp]
   \centering
@@ -156,9 +156,10 @@ hours per session. The remaining settings, read back from the checkpoints'
 metadata, are also common to the seven sessions: weights seed and split seed
 both $0$, \num{64} archives open at once for the composition of the batch
 (Section~\ref{sec:sl-sequences}) with a shuffling reservoir of \num{64}
-batches, gradient clipping at a norm of $5$, no reflection
-(Section~\ref{sec:sl-augmentation}), no position features, and the auxiliary geometry head
-enabled with a weight of $0.3$ (Section~\ref{sec:sl-geometry}).
+batches, gradient clipping at a norm of $5$, no position features, and the
+auxiliary geometry head enabled with a weight of $0.3$
+(Section~\ref{sec:sl-geometry}). Training windows are augmented with the
+left--right reflection of Section~\ref{sec:sl-augmentation}.
 
 This subsection describes what the metrics say about the imitation as such,
 taking as reference the network that is best in validation,
@@ -261,6 +262,29 @@ the reasons why the second training stage exists.
   \label{fig:res-corpus-amplitude}
 \end{figure}
 
+\paragraph{What the selected epoch gives up.}
+The protocol of Section~\ref{sec:exp-protocol} selects the epoch of lowest
+validation loss, but asks that an epoch improving the loss while degrading the
+amplitude or restart metrics be flagged rather than selected in silence. On the
+amplitude there is nothing to flag: for every network the selected epoch is
+also the one with the largest calibrated amplitude ratio on the forward
+component, or within $0.003$ of it. On the restart ratio every network has to
+be flagged. The ratio is highest in the first epochs and falls as the loss
+falls: from $0.39$ at epoch~1 to $0.06$ at the selected epoch for the
+\met{SparseConv_LRCU}, from $0.27$ to $0.07$ for the \met{SparseConv_LTC},
+from $0.25$ to $0.09$ for the \met{SparseConv_LRCU_NCP} and from $0.11$ to
+$0.01$ for the \met{SparseConv_CfC_NCP} (calibrated values, which are what the
+robot executes). Training, in other words, buys part of its loss by commanding
+less at departure, which is the behaviour a squared error rewards. The epochs
+that command more at a restart have a higher loss --- between $1.4$ and $3.9$
+times the selected one --- and choosing them would trade one defect for
+another. One exception deserves to be named: for the
+\met{SparseConv_LTC_NCP}, epoch~15 has a restart ratio of $0.13$ against
+$0.08$ at the selected epoch~20, for a validation loss only 3\% higher. The
+selection was nevertheless kept on the loss, as the protocol prescribes; how
+much the restart weighs on the fleet is the subject of
+Section~\ref{sec:res-cross}.
+
 \paragraph{Still and moving.}
 One would expect the frames with a zero command to be the easiest. The opposite
 happens: for the \met{SparseConv_CfC_NCP} the per-frame error on still frames
@@ -289,96 +313,6 @@ $0.978$ on the UAV, on yaw $0.986$ and $0.976$. Only the UAV commands the
 vertical component, and the figures on it coincide in practice with the
 aggregate ones; the lateral component, which the UGV cannot command, is
 practically absent from the UAV's demonstrations as well.
-
-\paragraph{Auxiliary geometry.}
-The auxiliary head explains about $47$--$50\%$ of the variance of the
-per-sector distances and $69$--$81\%$ of that of the height, with differences
-between architectures that are small compared with the epoch-to-epoch
-fluctuations. Since the encoder is the same for all of them, the result says
-what the encoder represents of the scene under this training, not what
-distinguishes the cells. Two separate questions remain, and the measurement
-tools of Section~\ref{sec:exp-tooling} answer them on the validation partition:
-whether the command \emph{uses} what the encoder computes, and whether the
-encoder \emph{represents} the scene.
-
-\paragraph{Does the command use the map?}
-The ablation replaces, with the same weights, the encoder's per-sample output
-by its batch mean --- the information is gone, the fusion stays in the range it
-was trained on --- and measures the calibrated validation loss again
-(Table~\ref{tab:res-encoder}). The loss rises for all seven networks, from
-$+8\%$ for the \met{SparseConv_LRCU} to $+22\%$ for the two CfC networks, and
-it rises further, by $14$--$48\%$, when every observation is given another
-sample's cloud instead. The command therefore depends on the content of the
-cloud and not merely on its presence as a constant, and the better a network
-imitates, the more it relies on it. The dependence is at least as strong on the
-$143^3$ grid, the one the fleet flies ($+7$ to $+25\%$). Per component, what the
-map carries is mostly the vertical command: for the \met{SparseConv_CfC_NCP}
-its $R^2$ falls from $0.77$ to $0.72$ without the encoder, the forward one from
-$0.975$ to $0.968$, and the yaw one does not move. The finest grid, $363^3$,
-holds only UGV frames with a residual loss four times smaller than the others,
-and there the percentages scatter between $-35\%$ and $+146\%$; it is not read.
-
-\paragraph{Does the encoder represent the scene?}
-The probe answers the second question independently of the command: a ridge
-regression from the frozen descriptor to the geometry each frame's own cloud
-shows --- the clearance per azimuth sector and the height above the ground ---
-fitted on half of the validation episodes and scored on the other half, so that
-a descriptor identifying the episode rather than describing the scene gains
-nothing. The same architecture at its initialisation gives the floor a trained
-read-out must clear (Table~\ref{tab:res-encoder}). Untrained, the descriptor
-already explains $24\%$ of the variance of the sector clearances and $43\%$ of
-that of the height, which is what a random sparse convolution preserves of a
-point cloud. Trained, the seven encoders reach $37$--$44\%$ on the sectors and
-$68$--$75\%$ on the height, with differences between architectures that are
-small and do not follow their ranking in the loss: the encoder is the same for
-all of them, and what the cells do downstream does not change what it learns.
-The height is the less telling of the two figures, since it separates the two
-platforms before anything else --- the UGV sits at a fixed height, the UAV
-cruises --- and a descriptor that recognises the robot explains most of it.
-
-The sector clearances are the figure that matters for the fleet, and on the
-$143^3$ grid the fleet flies they are the weakest: between $0.15$ and $0.29$
-against an untrained floor of $0.15$, so that for some networks the directional
-distance to the obstacles is barely more readable after training than before.
-Training does make the descriptor more informative in the other two respects the
-probe measures: its spread across samples grows from $0.07$ to $0.16$--$0.22$ on
-that grid, and its displacement under a shift of three voxels falls from $0.80$
-to $0.44$--$0.58$ of the distance between two different clouds. Taken together
-with the ablation, the picture is consistent: the imitation uses the map, it
-uses it mostly for the vertical command, and it teaches the encoder where the
-obstacles are only in part --- the part the reinforcement stage has to build on.
-
-\begin{table}[htbp]
-  \centering
-  \small
-  \caption{Corpus: what the command takes from the encoder and what the
-  encoder represents, on the validation partition. \emph{Ablation}: increase of
-  the calibrated loss when the encoder's output is replaced by its batch mean,
-  overall and on the $143^3$ grid the fleet flies, and when the clouds are
-  shuffled across the batch. \emph{Probe}: fraction of the variance of the
-  sector clearances and of the height explained by a linear read-out of the
-  frozen descriptor, on held-out episodes; the last row is the same
-  architecture at its initialisation.}
-  \label{tab:res-encoder}
-  \setlength{\tabcolsep}{4pt}
-  \begin{tabular}{@{}lrrrrrr@{}}
-    \toprule
-    & \multicolumn{3}{c}{\textbf{Ablation}} & \multicolumn{3}{c}{\textbf{Probe}} \\
-    \cmidrule(lr){2-4}\cmidrule(l){5-7}
-    \textbf{Network} & \textbf{Mean} & \textbf{Mean, $143^3$} & \textbf{Shuffled} & \textbf{Sectors} & \textbf{Sectors, $143^3$} & \textbf{Height} \\
-    \midrule
-    \met{CfC_NCP}     & $+21.9\%$ & $+24.9\%$ & $+40.5\%$ & 0.40 & 0.18 & 0.70 \\
-    \met{MLP} (ctrl.) & $+18.8\%$ & $+20.4\%$ & $+47.9\%$ & 0.40 & 0.19 & 0.73 \\
-    \met{CfC}         & $+22.4\%$ & $+22.5\%$ & $+39.0\%$ & 0.42 & 0.29 & 0.71 \\
-    \met{LTC_NCP}     & $+15.3\%$ & $+19.6\%$ & $+32.1\%$ & 0.44 & 0.15 & 0.73 \\
-    \met{LRCU_NCP}    & $+13.7\%$ & $+21.1\%$ & $+24.3\%$ & 0.37 & 0.21 & 0.75 \\
-    \met{LTC}         & $+11.2\%$ & $+13.7\%$ & $+17.6\%$ & 0.44 & 0.20 & 0.72 \\
-    \met{LRCU}        &  $+8.2\%$ &  $+7.3\%$ & $+14.3\%$ & 0.43 & 0.22 & 0.68 \\
-    \midrule
-    untrained         & -- & -- & -- & 0.24 & 0.15 & 0.43 \\
-    \bottomrule
-  \end{tabular}
-\end{table}
 
 \paragraph{Overfitting.}
 On the corpus, unlike on the sine wave, the model memorises. For the
@@ -459,18 +393,10 @@ two CfC networks. The difference between the best recurrent network and the
 control, $0.46\cdot10^{-3}$, is smaller than the oscillation of the
 \met{SparseConv_CfC_NCP} itself from one epoch to the next after its minimum
 (between $4.8$ and $6.1\cdot10^{-3}$), and each configuration was run with a
-single seed. Under the rule of Section~\ref{sec:exp-protocol}, then, on the
-corpus and with windows of sixteen steps memory has not yet shown that it is
-worth its state: the advantage of the \met{SparseConv_CfC_NCP} is indicative,
-not established.
-
-The most likely explanation lies in the observation rather than in the cells.
-The observation already contains the robot's velocity, the position of the goal
-and, through the encoder, the local geometry: the part of the command that can
-be learnt by imitation is largely a function of the current state, and the
-synthetic task shows that the advantage of memory emerges precisely when the
-current state is \emph{not} enough. Where the corpus is ambiguous --- the
-restart --- no network, with or without state, does better than $9\%$.
+single seed. Under the rule of Section~\ref{sec:exp-protocol}, then, the
+advantage of the \met{SparseConv_CfC_NCP} over the control is indicative, not
+established; what this means for the comparison as a whole is discussed in
+Section~\ref{sec:res-discussion}.
 
 \paragraph{Wiring.}
 For the same cell, the NCP variant is better in all three cases: $4.63$ against
@@ -542,6 +468,103 @@ $1.6$ and $3.0$; and the forward $R^2$ stays between $0.93$ and $0.98$ on both
 platforms.
 
 
+\subsection{What the Encoder Learns}
+\label{sec:res-sl-encoder}
+
+The sections above read the command; this one reads the encoder that feeds it,
+on the validation partition and for all seven networks. Three measurements are
+available, and they answer questions of increasing strictness. The first is the
+auxiliary head itself (Section~\ref{sec:geometry-head}): at the selected epoch
+it explains about $47$--$50\%$ of the variance of the per-sector clearances and
+$69$--$81\%$ of that of the height. That figure is an upper reading of what the
+encoder represents, because the head is non-linear and trained together with
+the encoder. The two tools of Section~\ref{sec:exp-tooling} ask the stricter
+questions: whether the command actually \emph{uses} what the encoder computes ---
+the ablation --- and whether a \emph{linear} read-out of the frozen descriptor,
+fitted on some episodes and scored on others, recovers the geometry --- the
+probe. The probe's figures are therefore lower than the head's, and they are the
+ones to read.
+
+\paragraph{Does the command use the map?}
+The ablation replaces, with the same weights, the encoder's per-sample output
+by its batch mean --- the information is gone, the fusion stays in the range it
+was trained on --- and measures the calibrated validation loss again
+(Table~\ref{tab:res-encoder}). The loss rises for all seven networks, from
+$+8\%$ for the \met{SparseConv_LRCU} to $+22\%$ for the two CfC networks, and
+it rises further, by $14$--$48\%$, when every observation is given another
+sample's cloud instead. The command therefore depends on the content of the
+cloud and not merely on its presence as a constant, and the better a network
+imitates, the more it relies on it. The dependence is at least as strong on the
+$143^3$ grid, the one the fleet flies ($+7$ to $+25\%$). Per component, what the
+map carries is mostly the vertical command: for the \met{SparseConv_CfC_NCP}
+its $R^2$ falls from $0.77$ to $0.72$ without the encoder, the forward one from
+$0.975$ to $0.968$, and the yaw one does not move. The finest grid, $363^3$,
+holds only UGV frames with a residual loss four times smaller than the others,
+and there the percentages scatter between $-35\%$ and $+146\%$; it is not read.
+
+\paragraph{Does the encoder represent the scene?}
+The probe answers the second question independently of the command: a ridge
+regression from the frozen descriptor to the geometry each frame's own cloud
+shows --- the clearance per azimuth sector and the height above the ground ---
+fitted on half of the validation episodes and scored on the other half, so that
+a descriptor identifying the episode rather than describing the scene gains
+nothing. The same architecture at its initialisation gives the floor a trained
+read-out must clear (Table~\ref{tab:res-encoder}). Untrained, the descriptor
+already explains $24\%$ of the variance of the sector clearances and $43\%$ of
+that of the height, which is what a random sparse convolution preserves of a
+point cloud. Trained, the seven encoders reach $37$--$44\%$ on the sectors and
+$68$--$75\%$ on the height, with differences between architectures that are
+small and do not follow their ranking in the loss: the encoder is the same for
+all of them, and what the cells do downstream does not change what it learns.
+The height is the less telling of the two figures, since it separates the two
+platforms before anything else --- the UGV sits at a fixed height, the UAV
+cruises --- and a descriptor that recognises the robot explains most of it.
+
+The sector clearances are the figure that matters for the fleet, and on the
+$143^3$ grid the fleet flies they are the weakest: between $0.15$ and $0.29$
+against an untrained floor of $0.15$, so that for some networks the directional
+distance to the obstacles is barely more readable after training than before.
+Training does make the descriptor more informative in the other two respects the
+probe measures: its spread across samples grows from $0.07$ to $0.16$--$0.22$ on
+that grid, and its displacement under a shift of three voxels falls from $0.80$
+to $0.44$--$0.58$ of the distance between two different clouds. Taken together
+with the ablation, the picture is consistent: the imitation uses the map, it
+uses it mostly for the vertical command, and it teaches the encoder where the
+obstacles are only in part --- the part the reinforcement stage has to build on.
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \caption{Corpus: what the command takes from the encoder and what the
+  encoder represents, on the validation partition. \emph{Ablation}: increase of
+  the calibrated loss when the encoder's output is replaced by its batch mean,
+  overall and on the $143^3$ grid the fleet flies, and when the clouds are
+  shuffled across the batch. \emph{Probe}: fraction of the variance of the
+  sector clearances and of the height explained by a linear read-out of the
+  frozen descriptor, on held-out episodes; the last row is the same
+  architecture at its initialisation.}
+  \label{tab:res-encoder}
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{@{}lrrrrrr@{}}
+    \toprule
+    & \multicolumn{3}{c}{\textbf{Ablation}} & \multicolumn{3}{c}{\textbf{Probe}} \\
+    \cmidrule(lr){2-4}\cmidrule(l){5-7}
+    \textbf{Network} & \textbf{Mean} & \textbf{Mean, $143^3$} & \textbf{Shuffled} & \textbf{Sectors} & \textbf{Sectors, $143^3$} & \textbf{Height} \\
+    \midrule
+    \met{CfC_NCP}     & $+21.9\%$ & $+24.9\%$ & $+40.5\%$ & 0.40 & 0.18 & 0.70 \\
+    \met{MLP} (ctrl.) & $+18.8\%$ & $+20.4\%$ & $+47.9\%$ & 0.40 & 0.19 & 0.73 \\
+    \met{CfC}         & $+22.4\%$ & $+22.5\%$ & $+39.0\%$ & 0.42 & 0.29 & 0.71 \\
+    \met{LTC_NCP}     & $+15.3\%$ & $+19.6\%$ & $+32.1\%$ & 0.44 & 0.15 & 0.73 \\
+    \met{LRCU_NCP}    & $+13.7\%$ & $+21.1\%$ & $+24.3\%$ & 0.37 & 0.21 & 0.75 \\
+    \met{LTC}         & $+11.2\%$ & $+13.7\%$ & $+17.6\%$ & 0.44 & 0.20 & 0.72 \\
+    \met{LRCU}        &  $+8.2\%$ &  $+7.3\%$ & $+14.3\%$ & 0.43 & 0.22 & 0.68 \\
+    \midrule
+    untrained         & -- & -- & -- & 0.24 & 0.15 & 0.43 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+
 \section{Reinforcement Learning}
 \label{sec:res-rl}
 
@@ -558,15 +581,11 @@ iterations and about \num{6.0} million steps. The six recurrent networks share
 a single configuration (Section~\ref{sec:rl-presets}): windows of \num{32}
 steps, six epochs per update, a target KL of $0.02$, a clipping $\epsilon$
 annealed from $0.2$ to $0.08$ and a learning rate going from $2\cdot10^{-4}$ to
-$6\cdot10^{-5}$. The control has its own configuration --- four epochs, larger
-batches, an entropy bonus of $0.001$, a target KL of $0.015$ --- but the same
-step budget, so that the curves are comparable along the horizontal axis. Each
-network was run once.
-
-The external reference is the conventional threshold of $200$ mean return,
-above which LunarLander is considered solved. To reduce the noise between one
-iteration and the next, the times to threshold are computed on a moving average
-over twenty iterations of the mean episodic return.
+$6\cdot10^{-5}$. The control has its own configuration but the same step
+budget, so that the curves are comparable along the horizontal axis. Each
+network was run once. The external reference is the conventional threshold of
+$200$ mean return, above which LunarLander is considered solved; times to
+threshold are read on a moving average over twenty iterations.
 
 \begin{table}[htbp]
   \centering
@@ -603,14 +622,13 @@ episodes of a single iteration of $30$--$47$ points. With a single run per
 network, the networks are therefore to be considered equivalent on the final
 result; the readable differences are in speed and in cost.
 
-The course is the same for every network, and the episode length makes it
-evident. In the first \num{500000}--\num{800000} steps the length rises to
-about a thousand steps, the environment's limit: the policy has learnt not to
-crash and stays airborne until the time runs out. Only afterwards does it learn
-to land, and the length drops to about $160$--$220$ steps while the return
-crosses $200$. This is the known sequence for this environment, and observing it
-is in itself a check that collection, advantage estimation and update are doing
-their job.
+The course is the same for every network: in the first \num{500000}--\num{800000}
+steps the episode length rises to the environment's limit of a thousand steps
+--- the policy has learnt not to crash and hovers until the time runs out ---
+and only afterwards does it learn to land, the length dropping to
+$160$--$220$ steps as the return crosses $200$. It is the known sequence for this
+environment, and observing it is itself a check on collection, advantage
+estimation and update.
 
 \begin{figure}[htbp]
   \centering
@@ -634,26 +652,22 @@ shrunk to a divergence of the order of $10^{-3}$. The entropy falls from
 $\ln 4 \approx 1.39$, the uniform distribution over the four actions, to
 $0.34$--$0.55$.
 
-\paragraph{The stateless control is the fastest.}
-As on the corpus, the control is not at the bottom of the ranking: the \met{MLP}
-reaches $250$ first and ties with the best network on the final return. The
-result is expected and says nothing against the cells: the LunarLander
-observation contains position, velocity, angle and angular velocity, that is the
-full state of the vehicle, and the task is in effect fully observable. Memory
-has nothing to add and costs optimisation. The test therefore verifies the
-\emph{machinery} --- that the recurrent networks learn as much as a network that
-has no need to remember --- and not the \emph{value} of memory, consistently
-with the limits stated in Section~\ref{sec:exp-protocol}.
-
-\paragraph{The cells.}
-Among the recurrent networks, the \met{LNN_LRCU_NCP} is the fastest to reach
-$200$, level with the control, and the two LTC networks are the slowest, with
-the \met{LNN_LTC_NCP} reaching $250$ only after $3.7$ million steps. The
-\met{LNN_CfC_NCP} shows the only late anomaly: between $4.2$ and $5.8$ million
-steps the mean episode length rises intermittently to about $450$ steps and the
-episodes per iteration drop accordingly, while the return stays above $260$. In
-part of the episodes the policy goes back to hovering before landing; the mean
-over the last fifty iterations ($286$ steps) still bears its trace.
+\paragraph{Speed and cost.}
+The control reaches $250$ first and ties with the best network on the final
+return. This is expected: the LunarLander observation contains the full state of
+the vehicle, so the test verifies the \emph{machinery} --- that the recurrent
+networks learn as much as a network with no need to remember --- and not the
+value of memory. Among the recurrent networks the \met{LNN_LRCU_NCP} is the
+fastest to reach $200$, level with the control, and the two LTC networks are the
+slowest, the \met{LNN_LTC_NCP} reaching $250$ only after $3.7$ million steps.
+In wall-clock time the order reverses, because here there is no encoder to
+dominate the cost and the cells weigh: for the same number of steps the control
+takes $22$ minutes, the CfC networks $45$--$49$, the LTC networks $54$--$63$ and
+the LRCU networks $73$--$90$. The \met{LNN_LRCU_NCP} is thus the most
+sample-efficient network and the least time-efficient one. The only late
+anomaly is the \met{LNN_CfC_NCP}'s: between $4.2$ and $5.8$ million steps part
+of its episodes go back to hovering before landing, and the mean length over
+the last fifty iterations ($286$ steps) still bears its trace.
 
 \paragraph{State norms.}
 The sharpest difference between the cells is not in the return but in the state
@@ -669,9 +683,7 @@ interval is not constant. The stability of LTC is instead the result of a
 correction made on this very environment: with the hyperbolic tangent as
 activation the fused step of Equation~\eqref{eq:ltc-fused} is not stable for
 negative values of $f$, and an earlier session had driven the state norm to
-$3\cdot10^{11}$ within \num{41} iterations, with actor gradients of
-$8\cdot10^{11}$, while the CfC on the same run stayed at a norm of $2$--$3$.
-With the sigmoid, which is the original formulation
+$3\cdot10^{11}$ within \num{41} iterations. With the sigmoid, which is the original formulation
 (Section~\ref{sec:cell-ltc}), $f$ is non-negative and the state stays bounded.
 
 \begin{figure}[htbp]
@@ -682,45 +694,444 @@ With the sigmoid, which is the original formulation
   \label{fig:res-lunar-states}
 \end{figure}
 
-\paragraph{Cost.}
-Unlike on the corpus, here there is no encoder to dominate the time, and the
-cells weigh. For the same number of steps the control takes $22$ minutes, the
-CfC networks $45$--$49$, the LTC networks $54$--$63$ and the LRCU networks
-$73$--$90$; the throughput drops from \num{4561} to \num{1100} steps per second.
-The combination of speed in steps and slowness in time makes the
-\met{LNN_LRCU_NCP} the most sample-efficient network and the least
-time-efficient one.
-
 \paragraph{What the test does not verify.}
-As stated in Section~\ref{sec:exp-protocol}, the action space is discrete, so
-the Gaussian policy, its learnt width and the envelope penalty
-(Section~\ref{sec:rl-actions}) are not exercised; the time step is constant; and
-the networks start from scratch rather than from an imitation, so the critic
-warm-up is not exercised either. The test establishes that the recurrent
-algorithm is correct and that each cell learns within it; the behaviour on the
-fleet is the subject of the next section.
+The action space is discrete, so the Gaussian policy, its learnt width and the
+envelope penalty (Section~\ref{sec:rl-actions}) are not exercised; the time step
+is constant; and the networks start from scratch, so the critic warm-up is not
+exercised either (Section~\ref{sec:exp-protocol}). The test establishes that
+the recurrent algorithm is correct and that each cell learns within it.
 
 
 \subsection{Training on the Fleet}
 \label{sec:res-rl-fleet}
+% Sources: ~/WorkEnv/ai/tests/rl/cur_*_01/training_log.csv (7 runs, 320
+% iterations each); figures from ~/WorkEnv/ai/plots/rl/cur_all/ copied to
+% images/ch08/fleet_* (fleet_outcomes.png regenerated for the thesis).
+% "Imitated" = iterations 1-19 (critic warm-up, actor frozen); "final" = last
+% 50 iterations (271-320). Shares are per episode, each iteration weighted by
+% the number of episodes that closed in it.
 
-% MISURE SPOSTATE DAL CAPITOLO 7 (erano incisi dentro definizioni di metriche):
-%   - una sessione in cui term/flipped e passato dal 73% al 97% degli episodi
-%     mentre il ritorno migliorava da -19 a -4.6
-%   - una sessione di 650 iterazioni in cui ep_progress_mean e sceso da 1.26 m
-%     a 0.04 m mentre il ritorno migliorava per tutto il tempo
-%   - il termine di progresso telescopato: d(s0)(1-gamma^T) vale +5.6 su una
-%     fetta corta e +24.5 su quella lunga, contro un premio di arrivo di 20
-%   - una configurazione della ricompensa in cui il termine terminale portava
-%     il 90% del ritorno
+\paragraph{Setting.}
+The seven spatial networks were fine-tuned on the fleet, each starting from its
+own imitation checkpoint, the one selected in
+Section~\ref{sec:res-sl-comparison}. Every session lasts \num{320} iterations
+of \num{2048} transitions, that is \num{655360} environment steps, about a
+ninth of the LunarLander budget; the first \num{19} iterations are reserved for
+the critic (Section~\ref{sec:rl-finetuning}), and for their whole duration the
+actor stays frozen bit for bit.
+
+\paragraph{A fleet of graded difficulty.}
+The fleet counts eight slices, the number the workstation of
+Section~\ref{sec:exp-tooling} holds beside the training session: the slices
+and the session share its \SI{16}{\gibi\byte} of accelerator memory, and with
+a trainable encoder the session needs a large share of it, so that the size of
+the fleet was set by the machine rather than by the throughput. The eight are
+four multirotors and four rovers, all in the
+\texttt{warehouse\_small} world --- a $40\times24$\,m warehouse --- and all on
+the $143^3$ grid, with \SI{0.1}{\metre} voxels and a map radius of
+\SI{7}{\metre}: the same grid on which Section~\ref{sec:res-sl-encoder} measures
+the ablation and the probe. The slices do not pose the same task. Each platform
+has four levels of difficulty, each assigned to one slice for the whole session
+(Table~\ref{tab:res-fleet-slices}): a short trip with the goal ahead, one of the
+same length with the goal to the side, one of \SI{5.5}{\metre} and one of
+\SI{7}{\metre}, on the last two of which the straight route is clear only in
+part of the episodes. This is not a curriculum: the levels do not follow one
+another, they all run together from the first step to the last, and the trainer
+knows nothing of them. Every batch of data therefore holds easy and hard trips
+in fixed proportions, on both platforms. Spawn and goal are fixed by the
+configuration of each slice and are not drawn at random: every slice poses the
+same trip at every episode.
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \caption{Fleet: the eight slices, all in the \texttt{warehouse\_small} world
+  on the $143^3$ grid. \emph{Clear route} is the share of episodes in which the
+  straight segment from spawn to goal crosses no obstacle; spawn and goal are
+  fixed per slice. \emph{Budget} is the maximum number of steps of an episode,
+  and $\gamma$ the discount derived from it.}
+  \label{tab:res-fleet-slices}
+  \begin{tabular}{@{}clcllrr@{}}
+    \toprule
+    \textbf{Slice} & \textbf{Robot} & \textbf{Level} & \textbf{Trip} & \textbf{Clear route} & \textbf{Budget} & $\gamma$ \\
+    \midrule
+    0 & UAV & 1 & \SI{2.5}{\metre}, ahead & always & 94  & 0.9894 \\
+    1 & UAV & 2 & \SI{2.5}{\metre}, at $90^\circ$ & always & 94  & 0.9894 \\
+    2 & UAV & 3 & \SI{5.5}{\metre} & $45\%$ & 207 & 0.9952 \\
+    3 & UAV & 4 & \SI{7}{\metre}   & $8\%$  & 263 & 0.9962 \\
+    4 & UGV & 1 & \SI{2.5}{\metre}, ahead & always & 95  & 0.9895 \\
+    5 & UGV & 2 & \SI{2.5}{\metre}, at $90^\circ$ & always & 95  & 0.9895 \\
+    6 & UGV & 3 & \SI{5.5}{\metre} & $43\%$ & 207 & 0.9952 \\
+    7 & UGV & 4 & \SI{7}{\metre}   & $0\%$  & 263 & 0.9962 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{Episodes, reward and optimisation.}
+The budget of every episode is three times the ideal time at maximum speed
+(Section~\ref{sec:rl-episodes}), and the discount is derived per slice,
+$\gamma = 1 - 1/T$ (Section~\ref{sec:rl-presets}); an episode arrives within
+\SI{1.0}{\metre} of the goal, ten voxels. No collision margin is armed; the
+stall condition, armed on the rovers only, ends the episode after twelve
+consecutive steps in which the commanded vehicle does not move. The reward is
+the \texttt{safe\_progress} policy of Section~\ref{sec:rl-reward} with its
+default values --- an arrival bonus of $25$, a penalty of $10$ for losing the
+vehicle --- and a cruise altitude of \SI{2.2}{\metre} for the multirotors. The
+encoder is trainable, without the auxiliary geometry term.
+
+All seven networks use the same hyper-parameters: the two presets they were
+taken from are identical, and when a session starts from a checkpoint the
+network is rebuilt from its metadata, so that the preset fixes only the
+optimisation. The learning rate is $3\cdot10^{-5}$ for the actor and
+$3\cdot10^{-4}$ for the critic, the entropy bonus $0.001$, the target KL
+$0.02$, with windows of eight steps and four epochs per update. These values
+are meant to fine-tune without drifting away from the imitated policy, and one
+effect is visible in the logs: the width of the Gaussian, which starts at 10\%
+of the envelope, is trainable but moves by at most 3\% in \num{320}
+iterations, and its mean stays at $0.080$ for the whole session in every
+network.
+
+Each network was trained once, with seed $0$. A session closes between
+\num{5507} and \num{8048} episodes and costs about fifteen hours, at about
+\num{12} steps per second for the whole fleet: a step costs a hundred to four
+hundred times as much as on LunarLander, because it is a physics simulation, a
+lidar rendering and a full pass through the pipeline of
+Chapter~\ref{ch:pipeline}. The cost is dominated by the environment and does
+not depend on the cell, and the budget of \num{320} iterations is therefore a
+time constraint rather than a choice of convergence.
+
+Consistently with Section~\ref{sec:metrics-rl}, the result is read on the share
+of episodes that reach the goal and on the reasons episodes end, not on the
+return: the shares are computed per episode, each iteration weighted by the
+number of episodes that closed in it.
+
+\paragraph{The imitated policy on the fleet.}
+The critic warm-up iterations are the only free measurement of the imitated
+policy on the fleet, and it is from them --- not from zero --- that the gain of
+the fine-tuning is to be read (Section~\ref{sec:exp-protocol}). The measurement
+is clear-cut: \emph{no} imitated policy flies the task. The arrival rate goes
+from 0.6\% for the control to 9.4\% for the \met{SparseConv_CfC_NCP}, and the
+most frequent way for an episode to end is to run out of time: between 45\%
+and 76\% of the episodes end on \met{max_steps}, the rest splitting between
+tipping over (9--27\%) and stalling (4--14\%). The mean progress per episode
+is negative for every network, between $-0.3$ and $-1.1$\,m: on average the
+vehicle ends the episode further from the goal than it started. It is the
+behaviour the restart metrics of the corpus anticipated
+(Section~\ref{sec:res-sl-corpus}): a policy that at departure commands 2\% of
+what the pilot commanded does not depart, and uses up the time it is given.
+
+\paragraph{Outcome.}
+After \num{320} iterations all seven networks reach the goal in between 36\%
+and 63\% of the episodes (Table~\ref{tab:res-fleet},
+Figure~\ref{fig:res-fleet-outcomes}), that is five to a hundred times as often
+as the imitated policy they started from. The mean return per episode rises
+from between $-5.7$ and $-1.2$ to between $6.3$ and $10.9$, the mean episode
+length falls from \num{99}--\num{121} to \num{66}--\num{112} steps, and the
+mean progress turns positive, between $0.5$ and $1.2$\,m per episode.
+
+The course is not gradual. For roughly the first hundred iterations the arrival
+rate stays below 20\% for every network, and running out of time remains the
+dominant end reason; between iterations $100$ and $220$ the rate rises, in
+every network, at the same moment the progress term of the reward turns
+positive, that is when the policy starts closing distance instead of losing it.
+Afterwards the growth slows down, and at the end of the session three networks
+--- \met{SparseConv_CfC}, the control and \met{SparseConv_LTC_NCP} --- still
+have their moving average at its maximum: the step budget stopped the training
+before the curve flattened, and two more networks reach their maximum within
+the last twenty iterations. For the remaining two the best window came earlier
+--- 61\% at iteration \num{219} for the \met{SparseConv_CfC_NCP} and 48\% at
+iteration \num{281} for the \met{SparseConv_LRCU} --- but the comparison is read
+on the final iterations for every network, as Section~\ref{sec:exp-protocol}
+prescribes, and the choice of the checkpoint to deploy is left to a later
+stage.
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \caption{Fleet: arrival rate of the imitated policy (critic warm-up
+  iterations) and after fine-tuning (last 50 iterations, and separately in its
+  two halves of 25), end reasons over the last 50 iterations, mean return per
+  episode, and largest norm of the recurrent state.}
+  \label{tab:res-fleet}
+  \setlength{\tabcolsep}{3.5pt}
+  \begin{tabular}{@{}lrrrrrrrr@{}}
+    \toprule
+    & \multicolumn{3}{c}{\textbf{Arrival rate}} & \multicolumn{3}{c}{\textbf{End reason (final)}} & & \\
+    \cmidrule(lr){2-4}\cmidrule(lr){5-7}
+    \textbf{Network} & \textbf{Imitated} & \textbf{Final} & \textbf{Halves} & \textbf{Flipped} & \textbf{Time} & \textbf{Stalled} & \textbf{Return} & $\lVert h\rVert_{\max}$ \\
+    \midrule
+    \met{CfC}         & 0.078 & 0.627 & 0.61 / 0.64 & 0.09 & 0.27 & 0.02 & 10.8 & 5.0 \\
+    \met{MLP} (ctrl.) & 0.006 & 0.611 & 0.57 / 0.65 & 0.11 & 0.20 & 0.08 & 10.9 & -- \\
+    \met{LTC_NCP}     & 0.038 & 0.471 & 0.45 / 0.49 & 0.04 & 0.35 & 0.13 &  7.4 & 3.2 \\
+    \met{CfC_NCP}     & 0.094 & 0.464 & 0.46 / 0.47 & 0.03 & 0.38 & 0.13 &  6.5 & 2.9 \\
+    \met{LRCU}        & 0.069 & 0.405 & 0.43 / 0.38 & 0.06 & 0.50 & 0.03 &  6.3 & 76.8 \\
+    \met{LRCU_NCP}    & 0.021 & 0.385 & 0.36 / 0.41 & 0.10 & 0.50 & 0.02 &  6.9 & 6.9 \\
+    \met{LTC}         & 0.051 & 0.356 & 0.35 / 0.36 & 0.06 & 0.54 & 0.05 &  7.5 & 3.6 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{ch08/fleet_outcomes.png}
+  \caption{Fleet: how episodes end over the \num{320} iterations, one panel per
+  network. Shares per episode, as a moving average over 20 iterations weighted
+  by the number of episodes; arrivals sit at the baseline so that they compare
+  across panels. The grey band is the critic warm-up, that is the imitated
+  policy; the figure in each panel is the arrival rate over the last 50
+  iterations (Table~\ref{tab:res-fleet}).}
+  \label{fig:res-fleet-outcomes}
+\end{figure}
+
+\paragraph{How episodes end.}
+Most of the gain comes from episodes that used to end on the clock: for six
+networks out of seven the share of \met{max_steps} falls by $16$--$49$ points;
+for the \met{SparseConv_LRCU}, which started from the lowest share (45\%), it
+rises slightly, to 50\%. Tipping over is roughly halved in every network, from
+9--27\% to 3--11\%, whereas stalling moves in different directions: it falls
+for four networks, stays level for the control, and rises for the two NCP
+networks with the CfC and LTC cells, from 4\% to 13\% and from 11\% to 13\%.
+Fine-tuning, in other words, taught above all how to \emph{depart} and arrive
+in time, and secondarily how to lose the vehicle less often. Even at the end of
+the session, running out of time remains the main cause of failure for every
+network, between 20\% and 54\% of the episodes.
+
+\paragraph{What the return is made of.}
+The decomposition of the reward (Section~\ref{sec:metrics-rl-reward}) shows
+that, at the end of the session, the mean reward per step coincides in practice
+with the terminal term alone: the ratio between the two lies between $0.96$
+and $1.08$ for every network. The progress earned ($+0.005$ to $+0.018$ per
+step) and the dense costs --- time, fixed at $-0.0064$, safety ($-0.003$ to
+$-0.005$) and altitude ($-0.0005$ to $-0.0014$) --- cancel almost exactly, and
+the return is in practice a count of arrivals. This is consistent with what the
+reward budget prescribes (Section~\ref{sec:rl-reward}): the dense costs must not
+be able to cost more than progress gives back, and they do not. It follows,
+however, that the return adds no information to the arrival rate, which is why
+Table~\ref{tab:res-fleet} reports it for completeness only.
+
+\paragraph{Optimisation.}
+The critic starts from nothing and it shows: during the warm-up the explained
+variance lies between $0.17$ and $0.36$, at the end of the session between
+$0.88$ and $0.94$. The trust region is instead the binding constraint for
+almost the whole session: after the warm-up the actor's update is stopped early
+in 58--79\% of the iterations for six networks out of seven, and in 31\% for
+the \met{SparseConv_LTC}. Every iteration therefore moves the policy as far as
+the region allows and no further, and it is plausibly this, together with the
+step budget, that sets the pace at which the arrival rate grows.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{ch08/fleet_performance.png}
+  \caption{Fleet: episodic return (mean, standard deviation, minimum and
+  maximum), episode length, episodes per iteration, and raw and smoothed
+  return, for the seven spatial networks.}
+  \label{fig:res-fleet-performance}
+\end{figure}
+
+\paragraph{The preliminary sessions.}
+The configuration used is the last of a series, and four measurements from the
+earlier sessions explain why the result is read on the end reasons and on the
+progress rather than on the return. In one session the share of episodes
+ending tipped over went from 73\% to 97\% while the return improved from $-19$
+to $-4.6$: the policy had learnt to lose the vehicle sooner, paying fewer dense
+costs. In another, of \num{650} iterations, the mean progress per episode fell
+from $1.26$ to $0.04$\,m while the return rose throughout. In both cases the
+return improved while the task got worse. The other two measurements concern
+the reward itself: the progress term in its canonical form, telescoped over an
+episode, is worth $d(s_0)(1-\gamma^T)$, that is $+5.6$ on a slice with a short
+trip and $+24.5$ on the one with the long trip, against an arrival bonus of
+$20$ --- on that slice, standing still paid more than arriving --- and in a
+later configuration the terminal term alone carried 90\% of the return. These
+measurements are what led to the undiscounted progress term and to the double
+budget constraint of Section~\ref{sec:rl-reward}.
+
 
 \subsection{Architecture Comparison}
 \label{sec:res-rl-comparison}
+
+The conditions of the comparison are those of Section~\ref{sec:exp-protocol}:
+the same step budget, the same fleet, the same reward, and for every network the
+imitation checkpoint of the same architecture. The optimisation hyper-parameters
+are also the same for all the networks.
+
+\paragraph{Two groups, again.}
+The networks split into two groups. The \met{SparseConv_CfC} and the control
+arrive in 61--63\% of the episodes; the other five between 36\% and 47\%. The
+separation between the two groups, about $15$ points, exceeds the oscillation
+within each run: between the first and the second half of the last fifty
+iterations the arrival rate of the same network changes by at most $8$ points.
+Within each group, by contrast, the differences are of the same order as that
+oscillation and are not to be read as a ranking. With a single run per network,
+and with a fleet whose interleaving across slices depends on the load of the
+machine (Section~\ref{sec:exp-protocol}), even the separation between the two
+groups remains indicative rather than established.
+
+\paragraph{The stateless control.}
+The network without memory arrives as often as the best recurrent one, although
+it started from the worst imitated policy of all (0.6\%), and although on the
+fleet the task is partially observable: the cloud sees only within the map
+radius and the velocity is estimated. What this implies for the comparison is
+discussed in Section~\ref{sec:res-discussion}.
+
+\paragraph{Wiring and cells.}
+The NCP wiring, which on the corpus improved the loss for the same cell, brings
+no consistent advantage on the fleet: the \met{SparseConv_CfC} beats its NCP
+variant ($0.63$ against $0.46$), the \met{SparseConv_LTC_NCP} beats the
+\met{SparseConv_LTC} ($0.47$ against $0.36$), and the two LRCU networks are
+equivalent ($0.41$ and $0.39$). The \met{SparseConv_CfC_NCP} also shows the
+largest late regression: its moving average reaches 61\% at iteration \num{219}
+and falls back to 46\% by the end, while the episode length and the number of
+episodes per iteration follow the same course
+(Figure~\ref{fig:res-fleet-performance}). Without a second run it cannot be
+said whether this is an instability of the network or an oscillation of the
+session.
+
+The LRCU cells confirm on the fleet what the sine wave and LunarLander had
+shown. The largest state norm of the \met{SparseConv_LRCU} is $72$--$77$
+throughout the session, against $3$--$7$ for all the others
+(Figure~\ref{fig:res-fleet-states}); the NCP variant stays below $7$. It is the
+only network whose arrival rate drops between the two final halves (43\% and
+38\%). The LRCU networks are also those whose imitated policy most often
+commands outside the envelope: during the warm-up the mean of the Gaussian of
+the \met{SparseConv_LRCU_NCP} falls outside the limits in 16.5\% of the steps
+and that of the \met{SparseConv_LRCU} in 13.2\%, against less than 1\% for the
+others; fine-tuning brings both below 5\%.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{ch08/fleet_states.png}
+  \caption{Fleet: recurrent state norms per cell, for the six recurrent
+  networks.}
+  \label{fig:res-fleet-states}
+\end{figure}
 
 
 \section{Cross-Stage Analysis}
 \label{sec:res-cross}
 
+The two stages were evaluated separately; this section asks what the first says
+about the second. The sample is seven networks, one run each: with seven points
+a rank correlation is significant at the 5\% level only beyond
+$|\rho| \approx 0.79$, and what follows is to be read against that threshold.
+
+\paragraph{The imitation loss does not predict how the imitated policy flies.}
+The ranking of the networks by test loss (Table~\ref{tab:res-test}) and the
+ranking by arrival rate of the imitated policy on the fleet are unrelated
+($\rho = -0.14$). The extreme case is the control: second by loss, last by
+arrivals (0.6\%). This is not surprising: the mean loss is dominated by the
+moving frames and by the forward velocity, whereas what decides whether an
+episode arrives is the departure --- the rare event on which every imitated
+network fails in the same way (Section~\ref{sec:res-sl-corpus}). The loss
+measures well what it measures, and that is not what the fleet needs.
+
+\paragraph{The quality of the imitation weakly predicts the end point.}
+The ranking by loss is, on the other hand, related to the \emph{final} arrival
+rate ($\rho = -0.64$) and to the gain of the fine-tuning ($\rho = -0.75$): the
+three networks with the lowest loss are three of the four with the best final
+result, and the CfC-plus-control group is the same in the two stages. Neither
+coefficient clears the threshold, and the two groups also coincide with the
+speed of convergence observed on the corpus, so that the quality of the
+starting point cannot be separated from how easily the network optimises.
+
+\paragraph{How much the network uses the map predicts the gain.}
+The strongest relation is with the encoder ablation (Table~\ref{tab:res-encoder}):
+how much the validation loss degrades when the information of the cloud is
+removed is related to the final arrival rate and to the gain of the fine-tuning
+($\rho = +0.79$ for both, at the threshold). The networks whose imitated command
+depends most on the map are those that fine-tuning takes furthest. The probe,
+by contrast, is related to neither ($|\rho| \le 0.32$, on the $143^3$ grid
+alone as well): that the descriptor \emph{contains} the geometry predicts
+nothing; that the command \emph{uses} it does. This is the most useful
+indication for future work, because it suggests selecting the imitation
+checkpoint on its dependence on the map as well, and not on the loss alone.
+
+\paragraph{What fine-tuning corrected.}
+Read together with Section~\ref{sec:res-sl-corpus}, the result on the fleet
+matches point by point the main defect of the imitation. The corpus showed a
+policy that at a restart commands 2\% of what the pilot commanded; the fleet
+shows imitated policies that run out of time in 45--76\% of the episodes with
+negative progress; fine-tuning removes up to fifty points from that end reason
+and moves almost all of them to arrivals. What fine-tuning corrected only in
+part is just as readable: tipping over is halved, but stalls --- contact with
+an obstacle for the vehicles that do not fly --- do not fall consistently, and
+they rise precisely for two of the networks that arrive best. This is
+consistent with what the probe found on the fleet's grid: the directional
+distance to the obstacles is the part of the scene the encoder represents
+worst.
+
 
 \section{Discussion, Limitations and Threats to Validity}
 \label{sec:res-discussion}
+
+\paragraph{What the results establish.}
+The whole chain works: the three cells learn a known dynamics, the recurrent
+agent is correct and learns on a reference problem, the imitation of the corpus
+generalises to unseen episodes with an error a third of that of echoing the
+velocity, and fine-tuning on the fleet takes the arrival rate from below 10\% to
+between 36\% and 63\% for every architecture. The two-stage procedure therefore
+produces a policy that flies a task imitation alone does not.
+
+\paragraph{What they do not establish.}
+The comparison between architectures does not single out a winner, and the
+reason is the control. In all three stages the network without state is among
+the best: second by loss on the corpus, the fastest on LunarLander, level with
+the best recurrent network on the fleet. In each case the difference between
+the control and the best recurrent network is smaller than the variability
+within a single run, so that on the tasks used memory has not shown that it is
+worth its state.
+
+The three stages say this for different reasons. On LunarLander it is expected,
+because the observation contains the full state of the vehicle. On the corpus
+the observation already carries the robot's velocity, the position of the goal
+and, through the encoder, the local geometry, so that the part of the command
+imitation can learn is largely a function of the current state; and where the
+demonstration is ambiguous --- the restart --- no network, with or without state,
+reaches $10\%$ of what the pilot commanded. On the fleet the task is partially
+observable, and the control still arrives as often as the best recurrent
+network. The hypothesis that continuous-time cells bring an advantage on this
+problem is therefore not refuted, but it is not supported by the data either.
+
+\paragraph{Threats to internal validity.}
+\begin{itemize}
+  \item \emph{One run per configuration.} Each network was trained once per
+        stage. The rule of Section~\ref{sec:exp-protocol} asks for the spread
+        across seeds to be measured before a difference is stated; here it was
+        replaced by the oscillation within a run (across epochs, across halves of
+        a window), which underestimates it. All differences between
+        architectures are therefore reported as indicative.
+  \item \emph{Fixed budgets.} Twenty epochs on the corpus and \num{320}
+        iterations on the fleet are time constraints. On the corpus LTC and LRCU
+        were still descending at the last epoch; on the fleet three networks were
+        still at their maximum. The comparison measures in part the speed of
+        convergence.
+  \item \emph{Asynchrony of the fleet.} Two identical runs do not collect the
+        same sequence of transitions; the seed fixes the tasks and not their
+        order.
+  \item \emph{Shared hyper-parameters.} The networks use the same optimisation
+        configuration, tuned on the \met{SparseConv_CfC_NCP}; it may suit some
+        cells better than others.
+  \item \emph{Fleet-level metrics.} Arrival rates and end reasons are recorded
+        over the whole fleet, not per slice: multirotors and rovers cannot be
+        separated, nor can the four levels. A difference between architectures
+        concentrated on the hard trips may therefore be diluted by the easy
+        ones.
+\end{itemize}
+
+\paragraph{Threats to external validity.}
+\begin{itemize}
+  \item \emph{Simulation only.} No policy has been run on a real robot. The
+        observation pipeline is the same as on board
+        (Section~\ref{sec:rl-environment}), but the dynamics, the sensors and
+        the latencies are those of the simulator.
+  \item \emph{One world, four fixed levels.} Fine-tuning took place in a single
+        world and on trips between \SI{2.5}{\metre} and \SI{7}{\metre}; nothing
+        says how the policy behaves on more cluttered maps or on longer trips.
+  \item \emph{A small, unbalanced corpus.} \num{476} episodes, two robots, two
+        worlds; 86\% of the energy of the command on a single component, the
+        lateral velocity absent. The probe finds the directional geometry poorly
+        readable precisely on the fleet's grid, which limits what imitation can
+        transfer.
+  \item \emph{Validation used twice.} The validation partition selected the
+        epoch and fitted the calibration; the test partition, read once, shows
+        that this introduced no appreciable bias (Table~\ref{tab:res-test}).
+\end{itemize}

@@ -104,7 +104,7 @@ has two stages. In the first, the networks learn by imitation from a corpus of
 flights recorded on the pipeline, in which every sample pairs what the robot
 observed with the command the pilot gave; this stage produces the weights the
 robot flies with and those the next stage starts from. In the second, the
-networks are refined by reinforcement learning, flying in a fleet of parallel
+networks are fine-tuned by reinforcement learning, flying in a fleet of parallel
 simulations and receiving a reward designed so that reaching the goal, without
 losing the vehicle, is numerically the best policy. Both stages are instrumented
 with a set of metrics designed to distinguish genuine learning from its

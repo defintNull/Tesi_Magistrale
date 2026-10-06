@@ -33,7 +33,7 @@
   \end{tikzpicture}
   \caption{The two stages of Section~\ref{sec:training-strategy}. The first
            produces both the weights deployed on the robot and the starting
-           point of the second; the second refines them on the distribution the
+           point of the second; the second fine-tunes them on the distribution the
            policy itself generates, which is where the behaviour the local map
            should determine finally has a consequence.}
   \label{fig:two-stage}
@@ -63,7 +63,7 @@ simulation, on a fleet of parallel environments.
 
 The strategy adopted is the composition of the two: the first stage produces the
 weights the robot flies with and the starting point of the second; the second
-refines them on the correct distribution, where the behaviour the local map
+fine-tunes them on the correct distribution, where the behaviour the local map
 ought to determine --- avoiding an obstacle --- finally has a consequence.
 
 \paragraph{What the two stages share.}
@@ -359,8 +359,10 @@ accelerating, whether the obstacle ahead is approaching or receding, how long it
 has been standing still.
 
 \paragraph{The policy is a function of the history.}
-It follows that the optimal policy is a function not of the last observation but
-of the sequence preceding it. The two customary treatments are to stack a window
+It follows that, in principle, the optimal policy is a function not of the last
+observation but of the sequence preceding it; how much of that history a policy
+actually needs on a given task is an empirical question, which the stateless
+control answers in Chapter~\ref{ch:results}. The two customary treatments are to stack a window
 of observations into a single vector, or to maintain a state updated at every
 step; the architecture of Chapter~\ref{ch:lnn} adopts the second, so that the
 policy is $\pi_\theta(a_t \mid o_t, x_t)$, with $x_t$ the recurrent state
@@ -525,7 +527,7 @@ fixed-step variants append the elapsed interval to it
 (Section~\ref{sec:cell-time}).
 
 \paragraph{The encoder: frozen or trained.}
-The sparse encoder may be kept fixed or refined along with the rest. Freezing it
+The sparse encoder may be kept fixed or fine-tuned along with the rest. Freezing it
 allows the descriptor rather than the cloud to be stored in the buffer, and the
 convolution not to be run during the update. Training it costs an additional
 convolution over every sample of every epoch, and the memory to hold its graph,
@@ -569,7 +571,7 @@ Chapter~\ref{ch:pipeline}. Isolation between slices is obtained on three
 distinct planes --- middleware domain, simulator partition, communication port
 --- and the training attaches to them through one socket per slice. A property
 important to the interpretation of the results follows: the observation on which
-the policy is refined is produced by the same chain that produces it on board,
+the policy is fine-tuned is produced by the same chain that produces it on board,
 and not by a simplified model of the environment.
 
 The fleet is moreover the way domain randomisation reaches this network. What
@@ -606,7 +608,7 @@ multiple of the ideal time is the same as demanding an average speed equal to
 the envelope divided by that multiple. It is a claim about the policy and not
 about the world, and it is to be checked against the speed the policy actually
 holds: a budget the demonstrator itself would not meet cannot be met by a policy
-refined from it, and it makes arrival structurally unreachable.
+fine-tuned from it, and it makes arrival structurally unreachable.
 
 \paragraph{Every episode restarts from the spawn.}
 An episode resuming half way along the route would be a shorter task scored on
@@ -617,16 +619,16 @@ robot stuck against an obstacle from being truncated in place indefinitely,
 which would make the distribution of the initial states a function of the
 policy's own failures.
 
-\paragraph{The starting position may be randomised.}
-This is a distinct question from the previous one: every episode starts from a
-point drawn uniformly within a disc around the configured position of the slice,
-with an analogous perturbation of the heading. Since the goal is anchored to the
-start, it moves with it: the trip keeps its length and its relative bearing, and
-crosses a different part of the environment. The two consequences are both the
-point --- the maximum number of steps stays exact, and what changes is the
-scene, which is what the encoder needs in order not to memorise one corridor.
-The draw is reproducible, being governed by a generator built from the seed of
-the session, the index of the slice and the number of the episode.
+\paragraph{The task belongs to the slice.}
+This is a distinct question from the previous one. The spawn and the goal are
+part of the configuration of each slice, like its robot and its world, and are
+not drawn by the training: every slice poses the same trip at every episode.
+What varies is the trip from one slice to the next, so that a fleet can pose
+tasks of graded difficulty side by side --- short trips with the goal in view
+next to longer ones with obstacles on the straight route --- and every batch of
+data then holds them in fixed proportions. This is not a curriculum: no task
+follows another, and the training does not know which slice is easy. The
+fleet used in the experiments is described in Section~\ref{sec:res-rl-fleet}.
 
 \paragraph{The terminal conditions.}
 An episode ends on arrival within the tolerance, on tipping beyond the declared
@@ -843,7 +845,7 @@ schedule, each of which would otherwise make the resumption read as a regression
 that did not occur.
 
 \paragraph{What can be transferred on board.}
-A policy refined from imitation carries the statistics of the corpus inside its
+A policy fine-tuned from imitation carries the statistics of the corpus inside its
 own weights and is transferable as it stands. A policy trained from random
 weights is not: its internal normalisation is the identity, and the
 normalisation that made the training work lives in the agent's recursive

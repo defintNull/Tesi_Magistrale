@@ -5,5 +5,143 @@
 \section{Summary of the Work}
 \label{sec:conclusions-summary}
 
+This thesis asked whether a liquid neural network can serve as the
+\emph{microbrain} of a hardware-independent platform --- consuming an
+observation whose form does not depend on the sensor that produced it, and
+commanding vehicles whose kinematics it reads from that same observation ---
+and which of its variants is best suited to the task. To answer it, three
+continuous-time cells, LTC, CfC and LRCU, were implemented, each with a dense
+wiring and with a sparse one following the Neural Circuit Policies, around a
+sparse convolutional encoder that reduces the voxel cloud to a descriptor; the
+six networks, plus a control identical to them but without state, were trained
+in two stages --- imitation of a corpus of recorded flights and fine-tuning by
+reinforcement on a fleet of parallel simulations --- and compared with
+everything that is not the cell and the wiring held equal.
+
+\paragraph{The first part of the question has a positive answer.}
+The whole chain works, and it was verified one level at a time. The three cells
+learn a known dynamics, with the CfC networks within three times the noise
+floor (Section~\ref{sec:res-sl-synthetic}); the recurrent agent is correct and
+learns on a reference problem with every cell (Section~\ref{sec:res-rl-lunar});
+the imitation of the corpus generalises to unseen episodes, with a test error
+about a third of that of the predictor echoing the observed velocity and the
+same ranking as on validation (Table~\ref{tab:res-test}); and the imitated
+command uses the map, since removing its content degrades the loss by up to
+22\% (Table~\ref{tab:res-encoder}). On the fleet, finally, fine-tuning takes the
+share of episodes that reach the goal from below 10\% to between 36\% and 63\%,
+on a mixed fleet of multirotors and rovers that a single policy commands by
+reading their limits from the observation (Section~\ref{sec:res-rl-fleet}). A
+liquid network can therefore serve as the microbrain of this platform, and the
+two-stage procedure produces a policy that flies a task imitation alone does
+not.
+
+\paragraph{The second part has no winner.}
+None of the three stages singles out one cell as better than the others in an
+established way. The networks split each time into two groups --- the CfC
+networks and the control on one side, LTC and LRCU on the other --- and the
+separation between the groups exceeds the variability within the runs, while
+the differences within each group do not. Above all, in all three stages the
+stateless control is among the best: second by loss on the corpus, the fastest
+on LunarLander, level with the best recurrent network on the fleet
+(Section~\ref{sec:res-discussion}). On the tasks used, then, memory has not
+shown that it is worth its state, and the hypothesis that motivated the choice
+of liquid networks --- that a memory consistent with physical time helps
+navigation --- remains neither confirmed nor refuted.
+
+If a candidate must nevertheless be named, the measurements point to the CfC
+cell, for practical reasons more than for accuracy. It converges before the
+others: below the threshold of the sine task after a single epoch, and at its
+minimum on the corpus after eleven, while LTC and LRCU are still descending
+after twenty. It is the only one of the three cells that receives the real
+interval as an argument rather than as a component of the observation. And in
+its dense variant it is the recurrent network with the highest arrival rate on
+the fleet. LRCU is the variant to advise against in its current form: its state
+grows with the length of the episode --- up to norms of $300$--$390$ on
+LunarLander and $72$--$77$ on the fleet, against less than $7$ for the others
+--- and on LunarLander it coincides with the only disastrous episodes at the
+end of training.
+
+\paragraph{The contributions, in the light of the results.}
+\begin{itemize}
+  \item \emph{The observation contract.} A single policy commands multirotors
+        and rovers on the same fleet, reading their limits from the
+        observation, with no special case in the loss or in the reward. The
+        result concerns two platforms and one grid, and is not to be extended
+        beyond what the declaration of the vehicle describes.
+  \item \emph{The controlled comparison.} The three cells and the two wirings
+        were put on the same bench with everything else fixed, in three stages,
+        beside a control without state. The control is what made the outcome
+        readable: without it, the ranking of the cells would have been reported
+        as a ranking of memories.
+  \item \emph{The two-stage training and its instrumentation.} The metrics did
+        the job they were introduced for. The skill against echoing the velocity
+        showed that the high $R^2$ on yaw was due to the persistence of the
+        signal; the restart ratio identified the main defect of the imitation
+        before the fleet confirmed it; the end reasons and the progress, and not
+        the return, described what fine-tuning actually taught.
+  \item \emph{The negative results.} Two limits stated in
+        Chapter~\ref{ch:introduction} were measured. Imitation teaches the
+        encoder the geometry of the scene only in part, and least on the fleet's
+        own grid (Table~\ref{tab:res-encoder}); and a satisfied budget
+        constraint is not enough to prevent the policy from learning to lose the
+        vehicle or not to advance, as the preliminary sessions show
+        (Section~\ref{sec:res-rl-fleet}). A third, unforeseen, adds to them: the
+        imitation loss does not predict how the imitated policy flies on the
+        fleet ($\rho = -0.14$, Section~\ref{sec:res-cross}).
+\end{itemize}
+
+\paragraph{What the fleet showed about imitation.}
+The link between the two stages is the result that most orients future work.
+The corpus showed policies that at departure command 2\% of what the pilot
+commanded; the fleet showed imitated policies that run out of time in most
+episodes; fine-tuning corrected above all that. And among the quantities
+measured on the imitation, the one that best predicts the final result is not
+the loss but the dependence of the command on the map ($\rho = +0.79$,
+Section~\ref{sec:res-cross}). The imitation stage should therefore be judged,
+and selected, on its use of the map and not on its mean error alone.
+
+
 \section{Future Work}
 \label{sec:conclusions-future}
+
+The future developments follow directly from the limits stated in
+Section~\ref{sec:res-discussion}, and are ordered from those that would
+strengthen the conclusions of this thesis to those that would extend them.
+
+\paragraph{Making the comparison statistically sound.}
+Each network was trained once per stage. Repeating at least the sessions of the
+two groups with more seeds is the condition for turning indicative differences
+into established ones, and it is the first thing to do. Two changes to the
+fleet's logging go in the same direction: arrival rates and end reasons per
+slice, so as to separate multirotors and rovers and the four levels of
+difficulty, and a step budget large enough for every network to reach a
+plateau, which on the corpus and on the fleet was not always reached.
+
+\paragraph{Correcting the imitation where it fails.}
+The main defect of the supervised stage is the departure, which a mean squared
+loss on an ambiguous demonstration pushes towards nothing. Three routes, in
+order of cost: weighting the restart frames more heavily in the loss; selecting
+the checkpoint also on the dependence of the command on the map, which on the
+fleet proved more predictive than the loss; replacing the
+deterministic head with one that represents several modes, so that ``hold
+still'' and ``depart'' are not averaged. To these adds a larger and more
+balanced corpus, containing the lateral component that is absent today.
+
+\paragraph{An encoder that represents the obstacles.}
+The probe shows that the directional distance to the obstacles is the part of
+the scene the encoder represents worst, precisely on the fleet's grid. The
+auxiliary geometry term is already in the code and was switched off during
+fine-tuning; measuring its effect on the fleet, and on the one grid the fleet
+uses, is a direct experiment.
+
+\paragraph{Separating the wiring from the skip connections.}
+The advantage of the NCP wiring on the corpus cannot be attributed to its
+sparsity rather than to the two skip connections that come with it. A dense
+variant with the same skip connections would separate the two.
+
+\paragraph{From the simulator to the robot.}
+No policy has yet been run on a real robot. The observation pipeline is the same
+on board and in simulation, and the path exporting a checkpoint to the
+inference node exists; the next step is to measure on the real vehicle how much
+of the arrival rate obtained in simulation survives dynamics, sensors and
+latencies that are not simulated.

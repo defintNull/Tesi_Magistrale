@@ -2,4 +2,34 @@
 
 \begin{abstract}
 
+Autonomous navigation pipelines are usually built around a single platform:
+replacing a sensor, or moving from a rover to a multirotor, means rewriting
+perception and control. This thesis addresses the last link of a
+hardware-independent ROS~2 autonomy pipeline --- deciding the motion --- with a
+learnt policy that maps a sensor-agnostic voxel representation of the
+surroundings, together with a declaration of the vehicle's kinematic limits,
+directly to a velocity command. Because the local map forgets, data arrive at
+irregular intervals and the right manoeuvre depends on what has just happened,
+the policy is built on Liquid Neural Networks, continuous-time recurrent networks
+whose state evolves with the interval actually elapsed.
+
+Three cells --- LTC, CfC and LRCU --- each with a dense and a sparse Neural
+Circuit Policy wiring, are implemented behind a sparse convolutional encoder and
+compared, with everything else held equal, against a stateless control. Training
+has two stages: imitation of a corpus of recorded flights, then fine-tuning with
+a recurrent PPO on a fleet of parallel simulations of multirotors and rovers,
+both instrumented with metrics designed to separate genuine learning from its
+imitations.
+
+A single policy commands both platforms by reading their limits from the
+observation. Imitation generalises to unseen episodes with a test error about a
+third of that of a velocity-echo baseline, and fine-tuning raises the share of
+episodes that reach the goal from below 10\% to between 36\% and 63\%. No cell,
+however, emerges as clearly superior, and the stateless control is among the best
+in every stage, so the benefit of a time-consistent memory remains unproven; CfC
+is indicated as the practical candidate for its fast convergence and its arrival
+rate. The work also shows that the imitation loss does not predict closed-loop
+performance, whereas the policy's dependence on the map is the imitation-stage
+quantity most closely related to it.
+
 \end{abstract}
